@@ -762,7 +762,8 @@ function project(cash0, inv0, P, retPct, months) {
 function renderTrends() {
   const M = model(); const SM = spendModel(); const P = readPlan(M, SM); const st = P.stats;
   const inputs = { trContrib: "contrib", trShare: "share", trReturn: "ret", trCash: "cash", trInfl: "infl", trGrow: "grow", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years" };
-  for (const [id, k] of Object.entries(inputs)) { const i = document.getElementById(id); if (document.activeElement !== i) i.value = P[k] ?? ""; }
+  for (const [id, k] of Object.entries(inputs)) { const i = document.getElementById(id); if (i && document.activeElement !== i) i.value = P[k] == null || Number.isNaN(P[k]) ? "" : P[k]; }
+  $("#trSummary").textContent = `saving ${hidden() ? "•••" : fmt(P.contrib)}/mo (${P.share}% invested) · spending ${hidden() ? "•••" : fmt(P.spend)}/yr · ${P.ret}% return · ${P.infl}% inflation` + (P.grow ? ` · savings +${P.grow}%/yr` : "") + (P.age ? ` · age ${P.age}` : "") + ` · ${P.years} yrs`;
   $("#trWin").value = String(P.win);
   if (document.activeElement !== $("#trSavRate")) $("#trSavRate").value = P.savRate;
   for (const [id, k] of [["trContrib", "contrib"], ["trShare", "share"], ["trSpend", "spend"], ["trCash", "cash"]]) document.getElementById(id).closest("label").classList.toggle("auto", P.auto[k]);

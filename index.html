@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="vendor/chart.umd.js"></script>
 <script src="vendor/supabase.js"></script>
-<script src="config.js"></script>
+<script src="config.js?v=7"></script>
 <style>
 h1,h2,.hero-label{font-family:'IBM Plex Sans',sans-serif}
 :root{
@@ -96,6 +96,14 @@ label.f{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:
 label.f.auto::after{content:"auto";position:absolute;right:10px;bottom:10px;font-size:10px;color:#14907a;letter-spacing:.04em;pointer-events:none}
 label.f.auto{position:relative}
 .autotag{color:#14907a;font-weight:500}
+details.assume{padding-top:14px;padding-bottom:14px}
+details.assume summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline;color:#f2e9d8;font-size:14px}
+details.assume summary::-webkit-details-marker{display:none}
+details.assume .adj{margin-left:auto;color:var(--muted);font-size:13px}
+details.assume[open] .adj{color:#f2e9d8}
+details.assume .assume-body{margin-top:14px;padding-top:14px;border-top:1px solid rgba(214,186,140,.15)}
+input[type=number]{-moz-appearance:textfield;appearance:textfield}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .seg{display:inline-flex;border:1px solid rgba(214,186,140,.25);border-radius:999px;overflow:hidden}
 .seg button{background:none;border:0;color:var(--muted);font:inherit;font-size:12.5px;padding:5px 12px;cursor:pointer}
 .seg button.on{background:rgba(214,186,140,.18);color:#fff}
@@ -239,8 +247,10 @@ a.lnk{color:var(--gold-2)}
         <div class="sub" id="trSub">&nbsp;</div>
       </div>
     </div>
-    <div class="card glass">
-      <h3>Assumptions <span class="r subtle">Fields marked <b class="autotag">auto</b> follow your real numbers. Type to override.</span></h3>
+    <details class="card glass assume" id="trAdjust">
+      <summary><span class="subtle">Based on</span> <span id="trSummary"></span> <span class="adj">Adjust ▾</span></summary>
+      <div class="assume-body">
+        <div class="subtle" style="margin:4px 0 12px">Fields marked <b class="autotag">auto</b> follow your real numbers. Type to override.</div>
       <div class="form-row">
         <label class="f">Base my pace on the last<select id="trWin" style="width:130px"><option value="3">3 months</option><option value="4">4 months</option><option value="5">5 months</option><option value="6">6 months</option><option value="12">12 months</option></select></label>
         <label class="f">Saved per month (€)<input id="trContrib" type="number" step="10" style="width:130px"></label>
@@ -256,8 +266,9 @@ a.lnk{color:var(--gold-2)}
         <label class="f">Years ahead<input id="trYears" type="number" step="1" style="width:90px"></label>
         <button class="btn ghost" id="trReset">Back to my real numbers</button>
       </div>
-      <div class="subtle" id="trWhatIf" style="margin-top:10px"></div>
-    </div>
+      </div>
+    </details>
+    <div class="subtle" id="trWhatIf" style="margin:10px 4px 0"></div>
     <div class="grid g4 section" id="trKpis"></div>
     <div class="card glass section">
       <h3>Net worth: history &amp; projection <span class="r seg" id="trView"><button data-v="real">Today's €</button><button data-v="nominal">Future €</button></span></h3>
@@ -361,6 +372,6 @@ a.lnk{color:var(--gold-2)}
 <div class="tip" id="tip"></div>
 <div class="toast glass" id="toast"></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
