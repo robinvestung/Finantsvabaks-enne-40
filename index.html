@@ -96,6 +96,9 @@ label.f{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:
 label.f.auto::after{content:"auto";position:absolute;right:10px;bottom:10px;font-size:10px;color:#14907a;letter-spacing:.04em;pointer-events:none}
 label.f.auto{position:relative}
 .autotag{color:#14907a;font-weight:500}
+.seg{display:inline-flex;border:1px solid rgba(214,186,140,.25);border-radius:999px;overflow:hidden}
+.seg button{background:none;border:0;color:var(--muted);font:inherit;font-size:12.5px;padding:5px 12px;cursor:pointer}
+.seg button.on{background:rgba(214,186,140,.18);color:#fff}
 .form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 .view{display:none}
 .view.on{display:block;animation:fade .25s ease}
@@ -257,7 +260,7 @@ a.lnk{color:var(--gold-2)}
     </div>
     <div class="grid g4 section" id="trKpis"></div>
     <div class="card glass section">
-      <h3>Net worth: history &amp; projection</h3>
+      <h3>Net worth: history &amp; projection <span class="r seg" id="trView"><button data-v="real">Today's €</button><button data-v="nominal">Future €</button></span></h3>
       <div class="legend" id="trLegend"></div>
       <div class="chartbox" style="height:360px"><canvas id="trChart"></canvas></div>
     </div>

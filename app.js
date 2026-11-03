@@ -770,9 +770,14 @@ function renderTrends() {
   const months = P.years * 12;
   const start = M.total;
   const cash0 = M.cash, inv0 = M.inv + M.other + M.debt;
-  const base = project(cash0, inv0, P, P.ret, months);
-  const low = project(cash0, inv0, P, P.ret - 2, months);
-  const high = project(cash0, inv0, P, P.ret + 2, months);
+  // projections run in today's euros; "future euros" view adds inflation back on top
+  const nominal = (S.settings.plan || {}).view === "nominal";
+  const inflF = Math.pow(1 + P.infl / 100, 1 / 12);
+  const show = arr => nominal ? arr.map((v, i) => v * Math.pow(inflF, i)) : arr;
+  const base = show(project(cash0, inv0, P, P.ret, months));
+  const low = show(project(cash0, inv0, P, P.ret - 2, months));
+  const high = show(project(cash0, inv0, P, P.ret + 2, months));
+  const fiAt = i => fiTarget * (nominal ? Math.pow(inflF, i) : 1);
   const hist = historySeries(M); const est = hist._est || {}; const histKeys = Object.keys(hist).sort();
   const nowK = ym(today());
   const firstK = histKeys.length ? (histKeys[0] < nowK ? histKeys[0] : nowK) : nowK;
@@ -786,7 +791,7 @@ function renderTrends() {
     const k0 = addMonths(st.keys[0], -1), k1 = st.keys[st.keys.length - 1];
     if (hist[k0] != null && hist[k1] != null) { const d = hist[k1] - hist[k0]; past = { d, saved: st.savedTotal, market: d - st.savedTotal, est: !!(est[k0] || est[k1]) }; }
   }
-  const hitIdx = arr => { const i = arr.findIndex(v => v >= fiTarget); return i < 0 ? null : i; };
+  const hitIdx = arr => { const i = arr.findIndex((v, j) => v >= fiAt(j)); return i < 0 ? null : i; };
   const fiI = hitIdx(base);
   const fiDate = fiI != null ? addMonths(nowK, fiI) : null;
   $("#trHeadLabel").textContent = "Financial independence (base case)";
@@ -794,14 +799,16 @@ function renderTrends() {
   const sub = $("#trSub"); sub.replaceChildren();
   sub.append("Target ", amt(fmt(fiTarget)), ` (${P.mult}× your yearly spending of `, amt(fmt(P.spend)), ")");
   if (fiI != null && fiI > 0) { const lo = hitIdx(high), hi = hitIdx(low); sub.append(` · in ${(fiI / 12).toFixed(1)} years` + (P.age ? `, at age ${Math.floor(P.age + fiI / 12)}` : "") + (lo != null && hi != null ? ` (range ${(lo / 12).toFixed(0)}–${(hi / 12).toFixed(0)} yrs)` : "")); }
-  sub.append(el("br"), el("span", { class: "subtle" }, "All future amounts are in today's euros, after " + P.infl + "% inflation."));
+  if (nominal && fiI != null && fiI > 0) sub.append(el("br"), "Target grows with prices to ", amt(fmt(fiAt(fiI))), " by then");
+  sub.append(el("br"), el("span", { class: "subtle" }, nominal ? "Showing future euros: what your statement will say, with " + P.infl + "% inflation included." : "Showing today's euros: future amounts with " + P.infl + "% inflation taken out, so they compare with prices now."));
+  for (const b of document.querySelectorAll("#trView button")) b.classList.toggle("on", b.dataset.v === (nominal ? "nominal" : "real"));
   const yr = n => base[Math.min(months, n * 12)];
   $("#trKpis").replaceChildren(
     kpi("Your saving pace", st ? signed(st.saved) + "/mo" : "—",
       st ? el("span", {}, (st.rate != null ? Math.round(st.rate * 100) + "% of income" : "No income found") + " · avg of last " + st.n + " mo · " + Math.round(st.investShare * 100) + "% of it invested") : "Connect LHV to measure it", COLORS[2]),
     kpi("Last " + (st ? st.n : P.win) + " months", past ? signed(past.d) : "—",
       past ? el("span", {}, amt(signed(past.saved)), " saved · ", el("span", { class: cls(past.market) }, amt(signed(past.market))), " markets & other" + (past.est ? " (estimated)" : "")) : "Needs a few months of history", COLORS[0]),
-    kpi("In 10 years", fmt(yr(10)), "At your current pace, " + P.ret + "% return", COLORS[0]),
+    kpi("In 10 years", fmt(yr(10)), (nominal ? "Future € · " : "Today's € · ") + "your pace, " + P.ret + "% return", COLORS[0]),
     kpi("In " + P.years + " years", fmt(base[months]), el("span", {}, "Range ", amt(fmt(low[months])), " – ", amt(fmt(high[months])))));
   const leg = $("#trLegend"); leg.replaceChildren(
     el("span", {}, el("i", { class: "ln", style: "background:#f2e9d8" }), "Past (rebuilt from IBKR & LHV)"),
@@ -814,7 +821,7 @@ function renderTrends() {
     { label: "Your pace", data: pad(base), borderColor: COLORS[0], backgroundColor: "rgba(63,114,184,.12)", fill: false, borderWidth: 2, pointRadius: 0, tension: .2 },
     { label: "Markets +2%", data: pad(high), borderColor: COLORS[2], borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0 },
     { label: "Markets −2%", data: pad(low), borderColor: COLORS[1], borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0 },
-    { label: "FI target", data: labels.map(() => fiTarget), borderColor: COLORS[3], borderWidth: 1, pointRadius: 0 },
+    { label: "FI target", data: labels.map((_, i) => fiAt(Math.max(0, i - idxNow))), borderColor: COLORS[3], borderWidth: 1, pointRadius: 0 },
   ];
   const yStep = labels.length > 300 ? 5 : labels.length > 150 ? 2 : 1;
   const yearTick = (v, i) => { const k = labels[i]; return k && k.endsWith("-01") && (+k.slice(0, 4)) % yStep === 0 ? k.slice(0, 4) : ""; };
@@ -822,18 +829,18 @@ function renderTrends() {
     options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
       scales: { x: { grid: { display: false }, ticks: { callback: yearTick, autoSkip: false, maxRotation: 0 } }, y: { ticks: { callback: tickEur }, grid: { color: "rgba(214,186,140,.08)" }, border: { display: false } } },
       plugins: { tooltip: { callbacks: { title: c => monthName(labels[c[0].dataIndex]) + (est[labels[c[0].dataIndex]] ? " (rebuilt)" : ""), label: c => c.parsed.y == null ? null : " " + c.dataset.label + ": " + (hidden() ? "•••" : fmt(c.parsed.y)) } } } } });
-  const ms = [10000, 25000, 50000, 100000, 250000, 500000, 1000000].filter(v => v > start);
+  const ms = [10000, 25000, 50000, 100000, 250000, 500000, 1000000, 2000000].filter(v => v > start);
   const mrows = ms.map(v => ({ label: fmt(v), i: base.findIndex(x => x >= v) })).filter(r => r.i >= 0).slice(0, 6);
-  if (fiI != null && fiI > 0) mrows.push({ label: "FI target · " + fmt(fiTarget), i: fiI, fi: true });
+  if (fiI != null && fiI > 0) mrows.push({ label: "FI target · " + fmt(fiAt(fiI)), i: fiI, fi: true });
   mrows.sort((a, b) => a.i - b.i);
   table($("#trMilestones"), [
-    { h: "Net worth (today's €)", v: r => r.fi ? el("b", {}, amt(r.label)) : amt(r.label) },
+    { h: nominal ? "Net worth (future €)" : "Net worth (today's €)", v: r => r.fi ? el("b", {}, amt(r.label)) : amt(r.label) },
     { h: "When", v: r => monthName(addMonths(nowK, r.i)) },
     { h: "From now", r: 1, v: r => r.i < 12 ? r.i + " mo" : (r.i / 12).toFixed(1) + " yrs" },
     ...(P.age ? [{ h: "Your age", r: 1, v: r => String(Math.floor(P.age + r.i / 12)) }] : []),
   ], mrows);
   // what saving more would do: +€100/mo
-  const more = project(cash0, inv0, { ...P, contrib: P.contrib + 100 }, P.ret, months);
+  const more = show(project(cash0, inv0, { ...P, contrib: P.contrib + 100 }, P.ret, months));
   const fiMore = hitIdx(more);
   $("#trWhatIf").textContent = fiI != null && fiMore != null && fiI > 0 ? `Saving €100 more per month would bring FI ${((fiI - fiMore) / 12).toFixed(1)} years sooner and add ${hidden() ? "•••" : fmt(more[months] - base[months])} by year ${P.years}.` : "";
   const last = SM.keys.filter(k => k < nowK).slice(-12);
@@ -957,7 +964,8 @@ for (const [id, k] of Object.entries({ trContrib: "contrib", trShare: "share", t
   i.addEventListener(i.tagName === "SELECT" ? "change" : "input", () => { S.settings.plan = { ...(S.settings.plan || {}), [k]: i.value }; renderTrends(); savePlanSoon(); });
 }
 let planTimer; const savePlanSoon = () => { clearTimeout(planTimer); planTimer = setTimeout(() => { if (!S.demo) Store.set("settings", S.settings); }, 1200); };
-$("#trReset").onclick = () => { const p = S.settings.plan || {}; S.settings.plan = { age: p.age, win: p.win, savRate: p.savRate }; renderTrends(); savePlanSoon(); };
+for (const b of document.querySelectorAll("#trView button")) b.onclick = () => { S.settings.plan = { ...(S.settings.plan || {}), view: b.dataset.v }; renderTrends(); savePlanSoon(); };
+$("#trReset").onclick = () => { const p = S.settings.plan || {}; S.settings.plan = { age: p.age, win: p.win, savRate: p.savRate, view: p.view }; renderTrends(); savePlanSoon(); };
 
 // ---------- misc controls ----------
 try { if (localStorage.getItem("mymoney:hide") === "1") document.body.classList.add("hide-amounts"); } catch { }
