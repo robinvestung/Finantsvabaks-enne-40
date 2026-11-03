@@ -76,10 +76,11 @@ In the site, click **Connect LHV**. A new tab opens: log in with Smart-ID / Mobi
 1. In IBKR **Client Portal**, go to **Performance & Reports → Flex Queries**.
 2. Under **Activity Flex Query**, click **+** (Create). Name it e.g. `MyMoney`, then tick these sections:
    - **Account Information**: Currency
-   - **Open Positions** (Summary): Symbol, Description, Asset Class, Currency, FX Rate To Base, Quantity, Mark Price, Position Value, Cost Basis Price, FIFO Unrealized P/L
+   - **Open Positions** (Summary): Symbol, Description, Asset Class, Currency, FX Rate To Base, Quantity, Mark Price, Position Value, Cost Basis Price, Unrealized P/L, Level of Detail
    - **Cash Report**: Currency, Ending Cash
    - **Net Asset Value (NAV) in Base**: Cash, Total
-   - **Format:** XML. **Period:** Last Business Day. Save it, and note the **Query ID** (a number).
+   - **Cash Transactions** (Detail): Currency, FX Rate To Base, Symbol, Description, Date/Time, Amount, Type. This is used for dividends.
+   - **Format:** XML. **Period:** Last 365 Calendar Days. **Include Currency Rates:** Yes. Save it, and note the **Query ID** (a number).
 3. On the same page, open **Flex Web Service Configuration**. Enable it and **generate a token**, choosing the longest validity.
 4. In the site, go to **⚙ Settings → Interactive Brokers**, paste the **token** and **Query ID**, and click **Save**. The site tests the token before saving it.
 

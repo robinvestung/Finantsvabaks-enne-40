@@ -300,7 +300,7 @@ async function loadIBKR(refresh) {
   try {
     const r = await fn("ibkr", "sync", { refresh: !!refresh });
     const d = r.data || {};
-    Object.assign(I, { currency: d.currency || "EUR", positions: d.positions || [], cash: d.cash, netLiq: d.netLiq, fx: d.fx || {}, raw: d, status: "ok", fetchedAt: d.fetchedAt || Date.now() });
+    Object.assign(I, { currency: d.currency || "EUR", positions: d.positions || [], cash: d.cash, netLiq: d.netLiq, fx: d.fx || {}, dividends: d.dividends || [], raw: d, status: "ok", fetchedAt: d.fetchedAt || Date.now() });
     if (r.warning) toast("IBKR: showing last saved numbers (" + r.warning + ")");
   } catch (e) { I.status = "error"; I.error = e; }
   renderChips(); renderAll();
@@ -553,7 +553,7 @@ function renderStocks(M) {
     kpi("Holdings", String(H.length), brokers.join(" · ") || null),
     kpi("Unrealized P/L", signed(pnl), cost ? el("span", { class: cls(pnl) }, pct(pnl / cost * 100)) : null),
     kpi("Today", todayItems.length ? signed(todayEur) : "—", todayItems.length ? el("span", { class: cls(todayEur) }, pct(todayEur / (tot || 1) * 100, 2)) : "No daily change reported"),
-    kpi("Largest position", H.length ? (Math.max(...H.map(h => h.value)) / (tot || 1) * 100).toFixed(1) + "%" : "—", "of the portfolio"));
+    divKpi());
   const top = [...H].sort((a, b) => b.value - a.value);
   const topRows = top.slice(0, 8).map((h, i) => ({ label: h.sym + " · " + h.broker, value: h.value, color: COLORS[i % 8], note: Math.round(h.value / (tot || 1) * 100) + "%" }));
   if (top.length > 8) topRows.push({ label: "Other (" + (top.length - 8) + ")", value: top.slice(8).reduce((s, h) => s + h.value, 0), color: "#8a7a63" });
@@ -573,6 +573,21 @@ function renderStocks(M) {
     { h: "P/L %", r: 1, v: h => h.pnl != null && h.cost ? pct(h.pnl / h.cost * 100) : "—", cls: h => cls(h.pnl), sort: h => h.cost ? h.pnl / h.cost : -1e15 },
     { h: "Today", r: 1, v: h => h.today != null ? pct(h.today, 2) : "—", cls: h => cls(h.today), sort: h => h.today ?? -1e9 },
   ], rows, stSort);
+}
+
+// Dividends received in the last 12 months, after withholding tax: IBKR (Flex cash transactions) + LHV (dividends & interest)
+function divKpi() {
+  const since = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
+  const ib = (S.ibkr.dividends || []).filter(d => !d.date || d.date >= since);
+  const ibNet = ib.reduce((s, d) => s + d.amount, 0);
+  const ibTax = -ib.filter(d => d.kind === "tax").reduce((s, d) => s + d.amount, 0);
+  let lhv = 0;
+  if (S.lhv.tx.length) for (const t of spendModel().tx) if (t.cat === "Dividends & interest" && t.date >= since) lhv += t.amount;
+  const parts = [];
+  if (S.ibkr.status === "ok") parts.push("IBKR " + fmt(ibNet));
+  if (S.lhv.tx.length) parts.push("LHV " + fmt(lhv));
+  if (ibTax > 0.5) parts.push("tax withheld " + fmt(ibTax));
+  return kpi("Dividends · 12 months", parts.length ? fmt(ibNet + lhv) : "—", parts.length ? parts.join(" · ") : "Connect a broker to see dividends", COLORS[2]);
 }
 
 let spMonthSel = null;

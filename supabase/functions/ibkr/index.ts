@@ -53,7 +53,23 @@ function parse(xml: string) {
   const navRows = tags(xml, "EquitySummaryByReportDateInBase");
   const nav = navRows[navRows.length - 1];
   const asOf = tags(xml, "FlexStatement")[0]?.toDate || null;
-  return { currency: base, positions, fx, cash: n(cashRow?.endingCash) ?? n(nav?.cash), netLiq: n(nav?.total), asOf };
+  // Dividends (net of withholding tax) and deposits from the Cash Transactions section, converted to base currency
+  const dividends: { date: string; sym: string; kind: "div" | "tax"; amount: number }[] = [];
+  let deposits = 0;
+  for (const t of tags(xml, "CashTransaction")) {
+    if (t.levelOfDetail && t.levelOfDetail !== "DETAIL") continue;
+    const type = (t.type || "").toLowerCase();
+    const ccy = (t.currency || base).toUpperCase();
+    const rate = n(t.fxRateToBase) ?? (ccy === base ? 1 : fx[ccy] ?? null);
+    const amt = n(t.amount);
+    if (amt == null || rate == null) continue;
+    const raw = (t.dateTime || t.reportDate || t.settleDate || "").replace(/[^0-9]/g, "").slice(0, 8);
+    const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : "";
+    const isDiv = type.includes("dividend"), isTax = type.includes("withholding");
+    if (isDiv || isTax) dividends.push({ date, sym: t.symbol || "", kind: isDiv ? "div" : "tax", amount: Math.round(amt * rate * 100) / 100 });
+    else if (type.includes("deposit")) deposits += amt * rate;
+  }
+  return { currency: base, positions, fx, cash: n(cashRow?.endingCash) ?? n(nav?.cash), netLiq: n(nav?.total), asOf, dividends, deposits: Math.round(deposits * 100) / 100 };
 }
 
 Deno.serve(async (req) => {
