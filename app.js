@@ -67,7 +67,8 @@ const Store = {
   }
 };
 // LHV goes through your server function, which only allows three read-only tools
-const LHVAPI = { callTool: async (server, tool, input) => fn("lhv", "call", { tool, args: input || {} }) };
+// Bank sources: "lhv" = LHV's own connector, "eb" = Swedbank & other banks via Enable Banking. Both answer in the same shapes.
+const LHVAPI = { callTool: async (server, tool, input, refresh) => fn(server === "eb" ? "eb" : "lhv", "call", { tool, args: input || {}, refresh: !!refresh }) };
 
 // ---------- state ----------
 const DEFAULT_RULES = [
@@ -96,11 +97,20 @@ const S = {
 };
 
 // ---------- connectors ----------
-const LHV_SERVERS = ["lhv"];
+const LHV_SERVERS = ["lhv", "eb"];
+const NOT_CONNECTED = new Set(["lhv_not_connected", "eb_not_connected", "server_not_connected", "not_in_manifest", "capability_disabled"]);
+const SOURCE_NAME = { lhv: "LHV", eb: "Bank" };
+function bankLabel() {
+  const banks = [...new Set(S.lhv.accounts.map(a => a.src === "eb" ? (a.bank || "Bank") : "LHV"))];
+  return banks.length ? banks.join(" + ") : "Bank";
+}
 const IBKR_SERVER = "IBKR";
 const ERR_TEXT = {
   lhv_not_connected: () => `Not connected yet. Click "Connect LHV" and log in with Smart-ID / Mobile-ID.`,
   lhv_reconnect: () => `Your LHV login has expired. Click "Connect LHV" to log in again.`,
+  eb_reconnect: () => `Your bank connection has expired (banks ask every ~180 days). Connect it again in Settings.`,
+  eb_not_configured: () => `Enable Banking isn't set up yet: add EB_APP_ID and EB_PRIVATE_KEY in Supabase (see README).`,
+  bank_not_connected: () => `No bank connected yet. Open Settings and connect your bank.`,
   ibkr_not_connected: () => `Add your IBKR Flex token and Query ID in Settings.`,
   ibkr_busy: () => `IBKR is still preparing the report. Try again in a minute.`,
   unauthorized: () => `Please log in again.`,
@@ -116,7 +126,7 @@ const ERR_TEXT = {
 const errMsg = (e, s) => (ERR_TEXT[e && e.code] || (() => (e && e.message) ? `${s}: ${String(e.message).slice(0, 160)}` : `${s} didn't answer.`))(s);
 
 async function call(server, tool, input, opts = {}) {
-  const run = () => LHVAPI.callTool(server, tool, input);
+  const run = () => LHVAPI.callTool(server, tool, input, opts.refresh);
   try { const r = await run(); return r.payload !== undefined ? r.payload : r; }
   catch (e) {
     if (e && e.retryable) { await new Promise(r => setTimeout(r, (e.retryAfterMs || 800) + Math.random() * 500)); const r = await run(); return r.payload !== undefined ? r.payload : r; }
@@ -125,38 +135,36 @@ async function call(server, tool, input, opts = {}) {
 }
 
 async function loadLHV(refresh) {
-  const L = S.lhv; L.status = "loading"; L.error = null; renderChips();
-  let lastErr = null;
-  const candidates = L.server ? [L.server] : LHV_SERVERS;
-  for (const server of candidates) {
+  const L = S.lhv; L.status = "loading"; L.error = null; L.warnings = []; renderChips();
+  const accounts = [], portfolios = [], errors = [];
+  await Promise.all(LHV_SERVERS.map(async src => {
     try {
-      const acc = await call(server, "list_accounts", undefined, { refresh });
-      if (acc && acc.success === false) throw { code: "tool_error", message: (acc.error && (acc.error.message || JSON.stringify(acc.error))) || "LHV error" };
-      L.server = server;
-      L.accounts = (acc && acc.accounts) || [];
-      break;
-    } catch (e) { lastErr = e; if (!(e && (e.code === "server_not_connected" || e.code === "not_in_manifest" || e.code === "capability_disabled"))) break; }
-  }
-  if (!L.server) { L.status = "error"; L.error = lastErr && lastErr.code === "server_not_connected" ? { code: "server_not_connected" } : lastErr; renderChips(); return; }
-  try {
-    const pf = await call(L.server, "get_instrument_balances", { isSettled: false }, { refresh });
-    L.portfolio = pf && pf.portfolio || null;
-  } catch (e) { L.portfolioError = e; }
+      const acc = await call(src, "list_accounts", undefined, { refresh });
+      if (acc && acc.success === false) throw { code: "tool_error", message: (acc.error && (acc.error.message || JSON.stringify(acc.error))) || "Bank error" };
+      for (const a of (acc && acc.accounts) || []) accounts.push({ ...a, src });
+      try {
+        const pf = await call(src, "get_instrument_balances", { isSettled: false }, { refresh });
+        for (const a of (pf && pf.portfolio && pf.portfolio.accounts) || []) portfolios.push({ ...a, src });
+      } catch (e) { L.portfolioError = e; }
+    } catch (e) { if (!(e && NOT_CONNECTED.has(e.code))) errors.push({ src, e }); }
+  }));
+  L.accounts = accounts; L.portfolio = { accounts: portfolios }; L.server = accounts.length ? "multi" : null;
+  if (!accounts.length) { L.status = "error"; L.error = errors.length ? errors[0].e : { code: "bank_not_connected" }; renderChips(); return; }
+  L.warnings = errors; // e.g. LHV fine but the Swedbank connection expired
   L.status = "ok"; L.fetchedAt = Date.now(); renderChips(); renderAll();
   // statements for spending (12 months) — current accounts only
   try {
     const from = addMonths(ym(today()), -12) + "-01";
-    const ibans = L.accounts.filter(a => a.type !== "GROWTH").map(a => a.iban);
-    const own = new Set(L.accounts.map(a => a.iban));
+    const own = new Set(accounts.map(a => a.iban));
     const owners = new Set();
-    for (const a of (L.portfolio && L.portfolio.accounts) || []) { own.add(a.iban); if (a.ownerName) owners.add(normName(a.ownerName)); }
+    for (const a of portfolios) { own.add(a.iban); if (a.ownerName) owners.add(normName(a.ownerName)); }
     own.owners = owners;
     const all = [];
-    await Promise.all(ibans.map(async iban => {
+    await Promise.all(accounts.filter(a => a.type !== "GROWTH").map(async a => {
       try {
-        const st = await call(L.server, "get_account_statement", { iban, dateFrom: from, dateTo: today(), limit: 5000 }, { refresh });
+        const st = await call(a.src, "get_account_statement", { iban: a.iban, dateFrom: from, dateTo: today(), limit: 5000 }, { refresh });
         const txs = (st && st.statement && st.statement.transactions) || [];
-        for (const t of txs) all.push(normTx(t, iban, own));
+        for (const t of txs) all.push(normTx(t, a.iban, own));
       } catch (e) { L.txError = e; }
     }));
     all.sort((a, b) => b.date.localeCompare(a.date));
@@ -183,7 +191,7 @@ function normTx(t, iban, own) {
   return {
     id: String(t.bankReference || "") + ":" + iban,
     date: localDate(t.settlementDtime), amount: rate == null ? 0 : raw * rate, rawAmount: raw, currency: ccy, noFx: rate == null,
-    desc, merchant: merchant || "—", iban, internal, cpAcc: cpAcc || null, cpName: (cp && cp.name) || null, dom, secu: dom === "SECU", card: !!m,
+    desc, merchant: merchant || "—", iban, internal, cpAcc: cpAcc || null, cpName: (cp && cp.name) || null, dom, secu: dom === "SECU", card: !!m || !!t.card,
   };
 }
 
@@ -330,8 +338,9 @@ function model() {
   if (S.lhv.status === "ok") {
     for (const a of S.lhv.accounts) {
       const v = num(a.availableBalance) || 0;
-      if (a.currency && a.currency !== "EUR") { const c = conv(v, a.currency); if (c != null) cashRows.push({ name: a.name || "LHV account", inst: "LHV", kind: a.type === "GROWTH" ? "Growth account cash" : "Cash", value: c }); }
-      else cashRows.push({ name: (a.name || "LHV account") + (a.type === "GROWTH" ? " (cash)" : ""), inst: "LHV", kind: a.type === "GROWTH" ? "Uninvested cash" : "Cash", value: v });
+      const inst = a.src === "eb" ? (a.bank || "Bank") : "LHV";
+      if (a.currency && a.currency !== "EUR") { const c = conv(v, a.currency); if (c != null) cashRows.push({ name: a.name || inst + " account", inst, kind: a.type === "GROWTH" ? "Growth account cash" : "Cash", value: c }); }
+      else cashRows.push({ name: (a.name || inst + " account") + (a.type === "GROWTH" ? " (cash)" : ""), inst, kind: a.type === "GROWTH" ? "Uninvested cash" : a.subtype === "SAVINGS" ? "Savings" : "Cash", value: v });
     }
     const pf = S.lhv.portfolio;
     if (pf && pf.accounts) {
@@ -547,18 +556,26 @@ function renderChips() {
     return el("span", { class: "chip", title: st.error ? errMsg(st.error, name) : "" }, el("i", { class: "dot " + dot }), name + " · " + label);
   };
   if (S.demo) c.append(el("span", { class: "chip" }, el("i", { class: "dot wait" }), "Demo data"));
-  else { c.append(chip("LHV", S.lhv), chip("IBKR", S.ibkr)); }
+  else {
+    c.append(chip(bankLabel(), S.lhv));
+    const ibOff = S.ibkr.status === "error" && S.ibkr.error && S.ibkr.error.code === "ibkr_not_connected"; // IBKR is optional: hide it if never set up
+    if (!ibOff) c.append(chip("IBKR", S.ibkr));
+  }
   const b = $("#banners"); b.replaceChildren();
   if (S.demo) b.append(el("div", { class: "banner glass warn" }, el("div", { class: "msg" }, el("b", {}, "You're looking at made-up demo numbers. "), "Log out and back in to see your own money."), el("button", { class: "btn", onclick: () => { S.demo = false; boot(); } }, "Use my data")));
 
-  for (const [name, st] of [["LHV", S.lhv], ["IBKR", S.ibkr]]) {
+  for (const w of (!S.demo && S.lhv.warnings) || []) b.append(el("div", { class: "banner glass" }, el("div", { class: "msg" }, el("b", {}, (w.src === "lhv" ? "LHV" : "Bank") + ": "), errMsg(w.e, w.src === "lhv" ? "LHV" : "Bank")),
+    el("button", { class: "btn primary", onclick: w.src === "lhv" ? connectLHV : openSettings }, w.src === "lhv" ? "Connect LHV" : "Open settings")));
+  for (const [name, st] of [["Bank", S.lhv], ["IBKR", S.ibkr]]) {
     if (S.demo || st.status !== "error" || !st.error) continue;
+    if (st.error.code === "ibkr_not_connected") continue;
     const e = st.error; const btns = [];
-    if (e.code === "approval_required") btns.push(el("button", { class: "btn primary", onclick: () => name === "LHV" ? loadLHV(true) : loadIBKR(true) }, "Allow " + name));
+    if (e.code === "approval_required") btns.push(el("button", { class: "btn primary", onclick: () => name === "Bank" ? loadLHV(true) : loadIBKR(true) }, "Allow " + name));
     if (e.code === "need_account" || e.code === "ibkr_not_connected") btns.push(el("button", { class: "btn primary", onclick: openSettings }, "Open settings"));
-    if (e.code === "lhv_not_connected" || e.code === "lhv_reconnect") btns.push(el("button", { class: "btn primary", onclick: connectLHV }, "Connect LHV"));
-    btns.push(el("button", { class: "btn ghost", onclick: () => name === "LHV" ? loadLHV(true) : loadIBKR(true) }, "Try again"));
-    const msg = e.code === "need_account" ? e.message : errMsg(e, name === "LHV" ? "LHV" : IBKR_SERVER);
+    if (e.code === "lhv_reconnect") btns.push(el("button", { class: "btn primary", onclick: connectLHV }, "Connect LHV"));
+    if (e.code === "bank_not_connected" || e.code === "eb_reconnect" || e.code === "eb_not_configured") btns.push(el("button", { class: "btn primary", onclick: openSettings }, "Open settings"));
+    btns.push(el("button", { class: "btn ghost", onclick: () => name === "Bank" ? loadLHV(true) : loadIBKR(true) }, "Try again"));
+    const msg = e.code === "need_account" ? e.message : errMsg(e, name === "Bank" ? "Bank" : IBKR_SERVER);
     b.append(el("div", { class: "banner glass" }, el("div", { class: "msg" }, el("b", {}, name + ": "), msg), ...btns));
   }
   const M = model();
@@ -668,7 +685,7 @@ function renderSpending() {
   $("#spMonthLabel").textContent = isCur ? "Spent this month" : "Spent in " + monthName(spMonthSel);
   if (!S.lhv.tx.length) {
     $("#spTotal").textContent = "—";
-    $("#spSub").textContent = S.lhv.status === "ok" ? "Loading transactions…" : "Connect LHV to see your spending.";
+    $("#spSub").textContent = S.lhv.status === "ok" ? "Loading transactions…" : "Connect your bank in Settings to see your spending.";
   } else {
     $("#spTotal").textContent = fmt(m.spend);
     const sub = $("#spSub"); sub.replaceChildren();
@@ -830,7 +847,7 @@ function renderTrends() {
   const yr = n => base[Math.min(months, n * 12)];
   $("#trKpis").replaceChildren(
     kpi("Your saving pace", st ? signed(st.saved) + "/mo" : "—",
-      st ? el("span", {}, (st.rate != null ? Math.round(st.rate * 100) + "% of income" : "No income found") + " · avg of last " + st.n + " mo · " + Math.round(st.investShare * 100) + "% of it invested") : "Connect LHV to measure it", COLORS[2]),
+      st ? el("span", {}, (st.rate != null ? Math.round(st.rate * 100) + "% of income" : "No income found") + " · avg of last " + st.n + " mo · " + Math.round(st.investShare * 100) + "% of it invested") : "Connect your bank to measure it", COLORS[2]),
     kpi("Last " + (st ? st.n : P.win) + " months", past ? signed(past.d) : "—",
       past ? el("span", {}, amt(signed(past.saved)), " saved · ", el("span", { class: cls(past.market) }, amt(signed(past.market))), " markets & other" + (past.est ? " (estimated)" : "")) : "Needs a few months of history", COLORS[0]),
     kpi("In 10 years", fmt(yr(10)), (nominal ? "Future € · " : "Today's € · ") + "your pace, " + P.ret + "% return", COLORS[0]),
@@ -999,10 +1016,26 @@ function openSettings() {
   draft = structuredClone(S.settings);
   const conn = $("#setConn"); conn.replaceChildren();
   const dot = st => el("i", { class: "dot " + (st.status === "ok" ? "ok" : st.status === "error" ? "err" : "") });
-  conn.append(el("div", { class: "list-item" }, dot(S.lhv), el("span", { style: "flex:1" }, "LHV"),
+  conn.append(el("div", { class: "list-item" }, dot({ status: S.lhv.accounts.some(a => a.src === "lhv") ? "ok" : "" }), el("span", { style: "flex:1" }, "LHV"),
     el("button", { class: "btn", onclick: connectLHV }, S.lhv.status === "ok" ? "Log in again" : "Connect LHV"),
     el("button", { class: "btn ghost", onclick: showLhvPaste }, "Paste LHV address"),
     S.lhv.status === "ok" ? el("button", { class: "btn ghost", onclick: async () => { await fn("lhv", "disconnect"); toast("LHV disconnected"); loadLHV(true); } }, "Disconnect") : null));
+  // Swedbank, SEB, Luminor, Coop… via Enable Banking
+  const ebMsg = el("div", { class: "subtle", style: "margin-top:4px" }, "Swedbank, SEB, Luminor, Coop and others via Enable Banking (read-only). Needs the Enable Banking setup from the README.");
+  const ebSel = el("select", { style: "flex:0 0 190px" }, el("option", { value: "Swedbank" }, "Swedbank"));
+  const ebList = el("div", { style: "display:flex;flex-direction:column;gap:6px;margin-top:6px" });
+  conn.append(el("div", { class: "list-item", style: "margin-top:8px" }, el("i", { class: "dot " + (S.lhv.accounts.some(a => a.src === "eb") ? "ok" : "") }), el("span", { style: "flex:1" }, "Other banks"), ebSel,
+    el("button", { class: "btn", onclick: async () => {
+      ebMsg.textContent = "Opening your bank…";
+      try { const r = await fn("eb", "connect", { aspsp: ebSel.value, country: "EE", redirect_url: location.origin + location.pathname }); location.href = r.url; }
+      catch (e) { ebMsg.textContent = errMsg(e, "Bank"); }
+    } }, "Connect")), ebMsg, ebList);
+  fn("eb", "status").then(r => {
+    for (const x of r.sessions || []) ebList.append(el("div", { class: "list-item" }, el("i", { class: "dot ok" }), el("span", { style: "flex:1" }, `${x.aspsp} · ${x.accounts} account${x.accounts === 1 ? "" : "s"}` + (x.validUntil ? ` · reconnect by ${new Date(x.validUntil).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : "")),
+      el("button", { class: "btn ghost", onclick: async () => { await fn("eb", "disconnect", { aspsp: x.aspsp }); toast(x.aspsp + " disconnected"); closeSettings(); loadLHV(true); } }, "Disconnect")));
+    return fn("eb", "banks", { country: "EE" });
+  }).then(r => { const names = (r && r.banks) || []; if (names.length) { const cur = ebSel.value; ebSel.replaceChildren(...names.map(n => el("option", { value: n, ...(n === cur || (/swedbank/i.test(n) && !names.includes(cur)) ? { selected: "" } : {}) }, n))); } })
+    .catch(e => { if (e && e.code === "eb_not_configured") ebMsg.textContent = errMsg(e, "Bank"); });
   const tok = el("input", { placeholder: "Flex token", type: "password", autocomplete: "off" });
   const qid = el("input", { placeholder: "Query ID", style: "flex:0 0 120px" });
   const ibMsg = el("div", { class: "subtle", style: "margin-top:4px" }, S.ibkr.status === "ok" ? "Connected. Paste a new token below only to replace it." : "Paste the Flex Web Service token and Query ID from IBKR (see README).");
@@ -1253,6 +1286,12 @@ async function boot() {
   sb.auth.onAuthStateChange((_e, sess) => { SESSION = sess; });
   if (!SESSION) { showAuth(); return; }
   const qp = new URLSearchParams(location.search);
+  const ebState = qp.get("state") || "";
+  if (ebState.startsWith("eb_") && (qp.has("code") || qp.has("error"))) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    if (qp.has("code")) { try { const r = await fn("eb", "finish", { code: qp.get("code"), state: ebState }); toast(`${r.bank} connected (${r.accounts} account${r.accounts === 1 ? "" : "s"})`); } catch (e) { toast(errMsg(e, "Bank")); } }
+    else toast("Bank login was cancelled");
+  }
   if (qp.has("lhv")) {
     const v = qp.get("lhv");
     toast(v === "connected" ? "LHV connected" : v === "declined" ? "LHV login was cancelled" : "LHV login didn't finish, try again");

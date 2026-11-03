@@ -14,6 +14,7 @@ A private personal-finance site: **net worth, stocks, spending and trends / FI p
 - A **GitHub** account (free), for hosting the site with GitHub Pages
 - A **Supabase** account (free plan is enough), for login, database and server functions
 - **LHV** internet bank (Smart-ID / Mobile-ID), optional
+- **Swedbank, SEB, Luminor, Coop…** via a free **Enable Banking** account, optional (see step 8b)
 - **Interactive Brokers** account, optional
 
 ## Setup (about 20 minutes)
@@ -47,6 +48,7 @@ supabase functions deploy lhv --no-verify-jwt
 supabase functions deploy ibkr --no-verify-jwt
 supabase functions deploy account --no-verify-jwt
 supabase functions deploy prices --no-verify-jwt
+supabase functions deploy eb --no-verify-jwt
 ```
 
 `--no-verify-jwt` is needed because the functions check your login themselves. LHV's login page also has to be able to send you back to the site.
@@ -73,6 +75,23 @@ Then, in Supabase, go to **Authentication → Sign In / Providers** and turn **o
 
 ### 8. Connect LHV
 In the site, click **Connect LHV**. A new tab opens: log in with Smart-ID / Mobile-ID / ID-card and approve read access. LHV then sends that tab to a `localhost` address that **won't load. That's expected**: LHV only allows returning to localhost. Copy the whole address from that tab and paste it into the box on the site, then click **Finish connecting**. The code in that address works once, only for your own login, and expires in minutes. After that the server keeps the connection alive; if LHV ever asks you to log in again, repeat this.
+
+### 8b. Connect Swedbank (or SEB, Luminor, Coop…) through Enable Banking
+
+Use this if your bank isn't LHV, or as well as LHV. Enable Banking is a licensed open-banking provider (supervised in Finland). Access is **read-only**: balances and transactions, never payments.
+
+1. Go to **enablebanking.com**, sign in with your email, and open **API applications → Add a new application**.
+   - **Environment:** *Production* for your real bank. Choose *Sandbox* only to try it with fake data.
+   - **Name:** e.g. `My Money` (your bank shows this name when you approve).
+   - **Redirect URL:** your site's address exactly, e.g. `https://YOUR-NAME.github.io/YOUR-REPO/`
+   - Click **Register**. Your browser downloads a file named like `abcd1234-....pem`. The part before `.pem` is your **application ID**.
+2. For production, follow Enable Banking's prompt to **link your own bank accounts** to the application (confirm with Smart-ID). Access to your own linked accounts is free.
+3. In **Supabase → Edge Functions → Secrets**, add:
+   - `EB_APP_ID` = the application ID
+   - `EB_PRIVATE_KEY` = open the `.pem` file in a text editor and paste **all** of it, including the `-----BEGIN` and `-----END` lines
+4. On your site: **⚙ Settings → Other banks**, pick **Swedbank** and click **Connect**. Approve in your bank (Smart-ID, Mobile-ID or the bank's app). You come back to your site and your accounts load.
+
+Banks ask you to approve again about every **180 days**; the site tells you when. Investments, funds and pension at the bank are not part of open banking: add those in Settings as assets.
 
 ### 9. Connect Interactive Brokers (Flex Web Service)
 1. In IBKR **Client Portal**, go to **Performance & Reports → Flex Queries**.
