@@ -92,6 +92,7 @@ const S = {
   lhv: { status: "idle", server: null, accounts: [], portfolio: null, tx: [], error: null, fetchedAt: null },
   ibkr: { status: "idle", positions: [], cash: null, netLiq: null, currency: null, error: null, raw: null, fetchedAt: null },
   demo: false, mcp: null,
+  prices: { status: "idle", items: {}, at: null, sig: "" },
 };
 
 // ---------- connectors ----------
@@ -161,7 +162,7 @@ async function loadLHV(refresh) {
     all.sort((a, b) => b.date.localeCompare(a.date));
     L.tx = all;
   } catch (e) { L.txError = e; }
-  renderAll();
+  renderAll(); loadPrices(false);
 }
 
 function normTx(t, iban, own) {
@@ -305,13 +306,14 @@ async function loadIBKR(refresh) {
   try {
     const r = await fn("ibkr", "sync", { refresh: !!refresh });
     const d = r.data || {};
-    Object.assign(I, { currency: d.currency || "EUR", positions: d.positions || [], cash: d.cash, netLiq: d.netLiq, fx: d.fx || {}, dividends: d.dividends || [], navHistory: d.navHistory || [], raw: d, status: "ok", fetchedAt: d.fetchedAt || Date.now() });
+    Object.assign(I, { currency: d.currency || "EUR", positions: d.positions || [], cash: d.cash, netLiq: d.netLiq, fx: d.fx || {}, dividends: d.dividends || [], navHistory: d.navHistory || [], asOf: d.asOf || null, raw: d, status: "ok", fetchedAt: d.fetchedAt || Date.now() });
     if (r.warning) toast("IBKR: showing last saved numbers (" + r.warning + ")");
     if (!refresh && d.navHistory === undefined) { setTimeout(() => loadIBKR(true), 0); return; }
   } catch (e) { I.status = "error"; I.error = e; }
-  renderChips(); renderAll();
+  renderChips(); renderAll(); loadPrices(false);
 }
 
+function ibkrAsOfMs() { const a = String(S.ibkr.asOf || ""); return a.length >= 8 ? Date.UTC(+a.slice(0, 4), +a.slice(4, 6) - 1, +a.slice(6, 8), 23, 59) : 0; }
 function fxRate(ccy) {
   if (!ccy || ccy === "EUR") return 1;
   if ((S.ibkr.currency || "EUR") === "EUR" && S.ibkr.fx && S.ibkr.fx[ccy]) return S.ibkr.fx[ccy];
@@ -347,13 +349,19 @@ function model() {
     let posSum = 0;
     for (const p of S.ibkr.positions) {
       const ccy = p.ccy || base;
-      const v = conv(p.value, ccy); if (v == null) continue;
-      posSum += v;
-      const pnl = p.pnl != null ? conv(p.pnl, ccy) : null;
-      const today = p.daily != null && p.value - p.daily ? p.daily / (p.value - p.daily) * 100 : null;
-      holdings.push({ sym: p.sym, name: p.name, broker: "IBKR", account: "", qty: p.qty, price: p.price, ccy, value: v, pnl, cost: pnl != null ? v - pnl : null, today });
+      // IBKR's report is yesterday's close; during the day use the live market price when we have one
+      let value = p.value, price = p.price, lpnl = p.pnl, today = null, live = false;
+      const ps = S.prices.items["IBKR:" + p.sym];
+      if (ps && !ps.proxy && ps.live != null && ps.ccy === ccy && p.qty && p.price && Math.abs(ps.live / p.price - 1) < 0.3 && (!S.ibkr.asOf || ps.liveAt * 1000 > ibkrAsOfMs())) {
+        const nv = p.qty * ps.live; if (lpnl != null) lpnl += nv - p.value; value = nv; price = ps.live; live = true;
+      }
+      if (ps && ps.prevClose && ps.live != null) today = (ps.live / ps.prevClose - 1) * 100;
+      const v = conv(value, ccy); if (v == null) continue;
+      posSum += conv(p.value, ccy);
+      const pnl = lpnl != null ? conv(lpnl, ccy) : null;
+      holdings.push({ sym: p.sym, name: p.name, broker: "IBKR", account: "", qty: p.qty, price, ccy, value: v, pnl, cost: pnl != null ? v - pnl : null, today, live });
     }
-    let cash = S.ibkr.cash != null ? conv(S.ibkr.cash, base) : null;
+    let cash = S.ibkr.cash != null ? conv(S.ibkr.cash, base) : null; // (posSum uses report values so the cash fallback stays consistent)
     if (cash == null && S.ibkr.netLiq != null) { const nl = conv(S.ibkr.netLiq, base); if (nl != null) cash = nl - posSum; }
     const label = S.ibkr.positions.length ? "IBKR cash" : "IBKR account value";
     if (cash != null && Math.abs(cash) > 0.5) cashRows.push({ name: label, inst: "IBKR", kind: S.ibkr.positions.length ? "Cash at broker" : "Holdings not itemised", value: cash });
@@ -406,6 +414,21 @@ function spendModel() {
   const full = keys.filter(k => k < cur).slice(-3);
   const avg = f => full.length ? full.reduce((s, k) => s + f(months[k]), 0) / full.length : null;
   return { tx, months, keys, avgSpend: avg(m => m.spend - m.oneoff), avgIncome: avg(m => m.income), avgSave: avg(m => m.income - (m.spend - m.oneoff)), fullMonths: full.length };
+}
+
+// ---------- market prices (day / week / month moves, live prices) ----------
+async function loadPrices(refresh) {
+  if (S.demo || S.lhv.status === "loading" || S.ibkr.status === "loading") return;
+  const H = model().holdings.filter(h => h.sym && h.ccy);
+  const items = H.map(h => ({ key: h.broker + ":" + h.sym, sym: h.sym, ccy: h.ccy, name: h.name, price: h.price }));
+  const sig = items.map(i => i.key).sort().join(",");
+  if (!items.length || (!refresh && sig === S.prices.sig && S.prices.status !== "error")) return;
+  S.prices.sig = sig; S.prices.status = "loading";
+  try {
+    const r = await fn("prices", "get", { items, refresh: !!refresh });
+    S.prices.items = r.items || {}; S.prices.status = "ok"; S.prices.at = Date.now();
+  } catch (e) { S.prices.status = "error"; S.prices.error = e; }
+  renderAll();
 }
 
 // ---------- history snapshots ----------
@@ -853,13 +876,94 @@ function renderTrends() {
       plugins: { tooltip: { callbacks: { label: c => { const k = last[c.dataIndex], m = SM.months[k]; return hidden() ? " •••" : [" Saved: " + fmt(c.parsed.y) + (m.income > 0 ? " (" + Math.round(c.parsed.y / m.income * 100) + "% of income)" : ""), " Income " + fmt(m.income) + " · spent " + fmt(m.spend)]; } } } } } });
 }
 
+// ---------- insights: how your investments moved ----------
+const PERIODS = [["day", "Today"], ["week", "Week"], ["month", "Month"], ["m3", "3 months"], ["ytd", "This year"], ["year", "Year"]];
+let inPeriod = "day";
+function isoMinus(per) {
+  const d = new Date();
+  if (per === "week") d.setDate(d.getDate() - 7);
+  else if (per === "month") d.setMonth(d.getMonth() - 1);
+  else if (per === "m3") d.setMonth(d.getMonth() - 3);
+  else if (per === "year") d.setFullYear(d.getFullYear() - 1);
+  else if (per === "ytd") return (d.getFullYear() - 1) + "-12-31";
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function priceOn(ser, date) {
+  let v = null; for (const [d, c] of ser.closes) { if (d <= date) v = c; else break; }
+  if (v == null && ser.closes.length && (new Date(ser.closes[0][0]) - new Date(date)) <= 7 * 864e5) v = ser.closes[0][1]; // history starts a few days after the date
+  return v;
+}
+function priceNow(ser) { return ser.live != null ? ser.live : ser.closes.length ? ser.closes[ser.closes.length - 1][1] : null; }
+// % move of one holding over a period (null if we have no price history for it)
+function move(h, per) {
+  const ser = S.prices.items[h.broker + ":" + h.sym];
+  if (!ser || !ser.closes || !ser.closes.length) { if (per === "day" && h.today != null) return { pct: h.today, eur: h.value * (1 - 1 / (1 + h.today / 100)) }; return null; }
+  const now = priceNow(ser);
+  const then = per === "day" ? ser.prevClose : priceOn(ser, isoMinus(per));
+  if (!now || !then) return null;
+  return { pct: (now / then - 1) * 100, eur: h.value * (1 - then / now) };
+}
+function renderInsights(M) {
+  const seg = $("#inPeriods");
+  if (!seg.children.length) for (const [k, l] of PERIODS) seg.append(el("button", { "data-v": k, onclick: () => { inPeriod = k; renderInsights(model()); } }, l));
+  for (const b of seg.children) b.classList.toggle("on", b.dataset.v === inPeriod);
+  const label = PERIODS.find(p => p[0] === inPeriod)[1];
+  const H = M.holdings.filter(h => h.value > 0);
+  const rows = H.map(h => ({ h, m: move(h, inPeriod) }));
+  const known = rows.filter(r => r.m);
+  const chg = known.reduce((s, r) => s + r.m.eur, 0);
+  const startVal = known.reduce((s, r) => s + r.h.value - r.m.eur, 0);
+  $("#inLabel").textContent = "Your investments · " + label.toLowerCase();
+  $("#inTotal").replaceChildren(H.length ? amt(signed(chg), cls(chg)) : "—");
+  const sub = $("#inSub"); sub.replaceChildren();
+  if (known.length) sub.append(el("span", { class: cls(chg) }, pct(startVal ? chg / startVal * 100 : null, 2)), ` on ${known.length} of ${H.length} holdings · price moves only, based on what you hold now`);
+  else sub.append(S.prices.status === "loading" ? "Loading prices…" : S.prices.status === "error" ? "Couldn't load prices right now." : "No price data yet.");
+  if (inPeriod === "day" && S.prices.at) sub.append(el("br"), el("span", { class: "subtle" }, "Live prices from Yahoo Finance (may be ~15 min delayed), checked " + new Date(S.prices.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })));
+
+  const up = known.filter(r => r.m.pct > 0.005).length, down = known.filter(r => r.m.pct < -0.005).length;
+  const best = known.slice().sort((a, b) => b.m.pct - a.m.pct)[0], worst = known.slice().sort((a, b) => a.m.pct - b.m.pct)[0];
+  const since = inPeriod === "day" ? today() : isoMinus(inPeriod);
+  let divs = 0;
+  for (const d of S.ibkr.dividends || []) if (d.date && d.date >= since) divs += d.amount;
+  if (S.lhv.tx.length) for (const t of spendModel().tx) if (t.cat === "Dividends & interest" && t.date >= since) divs += t.amount;
+  $("#inKpis").replaceChildren(
+    kpi("Best", best ? best.h.sym : "—", best ? el("span", { class: cls(best.m.pct) }, pct(best.m.pct), " · ", amt(signed(best.m.eur))) : null, COLORS[2]),
+    kpi(worst && worst.m.pct >= 0 ? "Weakest" : "Worst", worst ? worst.h.sym : "—", worst ? el("span", { class: cls(worst.m.pct) }, pct(worst.m.pct), " · ", amt(signed(worst.m.eur))) : null, COLORS[7]),
+    kpi("Up / down", known.length ? up + " / " + down : "—", known.length ? "holdings that rose / fell" : null, COLORS[0]),
+    kpi("Dividends", fmt(divs), "received " + (inPeriod === "day" ? "today" : "in this period") + ", after tax", COLORS[3]));
+
+  const byEur = known.slice().sort((a, b) => b.m.eur - a.m.eur);
+  const mk = r => ({ label: r.h.sym + " · " + r.h.broker, value: r.m.eur, text: signed(r.m.eur), note: pct(r.m.pct), cls: cls(r.m.eur), color: r.m.eur >= 0 ? COLORS[2] : COLORS[7] });
+  bars($("#inGains"), byEur.filter(r => r.m.eur > 0.5).slice(0, 6).map(mk), { empty: "Nothing went up." });
+  bars($("#inFalls"), byEur.filter(r => r.m.eur < -0.5).reverse().slice(0, 6).map(mk), { empty: "Nothing went down." });
+
+  // value of what you hold now, day by day
+  const from = inPeriod === "day" || inPeriod === "week" ? isoMinus("month") : isoMinus(inPeriod);
+  const dates = [...new Set(known.flatMap(r => (S.prices.items[r.h.broker + ":" + r.h.sym] || { closes: [] }).closes.map(c => c[0])))].filter(d => d >= from).sort();
+  const series = dates.map(d => known.reduce((s, r) => { const ser = S.prices.items[r.h.broker + ":" + r.h.sym]; const now = ser && priceNow(ser), p = ser && priceOn(ser, d); return s + (ser && now && p ? r.h.value * p / now : (ser ? 0 : r.h.value)); }, 0));
+  $("#inChartTitle").textContent = "Value of your current holdings, " + (inPeriod === "day" || inPeriod === "week" ? "last month" : label.toLowerCase());
+  chart("inChart", { type: "line", data: { labels: dates, datasets: [{ data: series, borderColor: COLORS[0], backgroundColor: "rgba(63,114,184,.12)", fill: true, borderWidth: 2, pointRadius: 0, tension: .2 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { title: c => new Date(dates[c[0].dataIndex]).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }), label: c => " " + (hidden() ? "•••" : fmt(c.parsed.y)) } } },
+      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8, callback: (v, i) => new Date(dates[i]).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) } }, y: { ticks: { callback: v => hidden() ? "•••" : Math.abs(v) >= 1000 ? "€" + (v / 1000).toFixed(v >= 1e5 ? 0 : 1) + "k" : "€" + Math.round(v) }, grid: { color: "rgba(214,186,140,.08)" }, border: { display: false } } } } });
+
+  const per = ["day", "week", "month", "ytd", "year"];
+  const all = H.map(h => ({ h, ...Object.fromEntries(per.map(p => [p, move(h, p)])) }));
+  const pc = r => r ? el("span", { class: cls(r.pct) }, pct(r.pct)) : el("span", { class: "subtle" }, "—");
+  table($("#inTable"), [
+    { h: "Holding", v: r => el("span", {}, el("b", {}, r.h.sym), " ", el("span", { class: "subtle" }, r.h.broker + (S.prices.items[r.h.broker + ":" + r.h.sym]?.proxy ? " · tracks bitcoin price" : ""))), sort: r => r.h.sym },
+    { h: "Value", r: 1, v: r => amt(fmt(r.h.value)), sort: r => r.h.value },
+    ...per.map(p => ({ h: { day: "Today", week: "Week", month: "Month", ytd: "This year", year: "Year" }[p], r: 1, v: r => pc(r[p]), sort: r => r[p] ? r[p].pct : -1e9 })),
+  ], all, inSort);
+}
+const inSort = { i: 1, dir: -1, redraw: () => renderInsights(model()) };
+
 let renderQueued = false;
 function renderAll() {
   if (renderQueued) return; renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
     const M = model();
-    renderChips(); renderNetWorth(M); renderStocks(M); renderSpending(); renderTrends();
+    renderChips(); renderNetWorth(M); renderStocks(M); renderSpending(); renderTrends(); renderInsights(M);
     snapshot(M);
   });
 }
@@ -867,7 +971,7 @@ function renderAll() {
 // ---------- routing ----------
 function route() {
   const v = (location.hash || "#networth").slice(1);
-  const name = ["networth", "stocks", "spending", "trends"].includes(v) ? v : "networth";
+  const name = ["networth", "stocks", "spending", "trends", "insights"].includes(v) ? v : "networth";
   document.querySelectorAll(".view").forEach(s => s.classList.toggle("on", s.id === "v-" + name));
   document.querySelectorAll("#tabs a").forEach(a => a.classList.toggle("on", a.dataset.v === name));
   Object.values(charts).forEach(c => c.resize());
@@ -971,7 +1075,7 @@ $("#trReset").onclick = () => { const p = S.settings.plan || {}; S.settings.plan
 // ---------- misc controls ----------
 try { if (localStorage.getItem("mymoney:hide") === "1") document.body.classList.add("hide-amounts"); } catch { }
 $("#btnHide").onclick = () => { document.body.classList.toggle("hide-amounts"); try { localStorage.setItem("mymoney:hide", hidden() ? "1" : "0"); } catch { } Object.values(charts).forEach(c => c.update()); };
-$("#btnRefresh").onclick = () => { if (S.demo || !S.mcp) return; loadLHV(true); loadIBKR(true); };
+$("#btnRefresh").onclick = () => { if (S.demo || !S.mcp) return; S.prices.sig = ""; loadLHV(true); loadIBKR(true); };
 $("#stSearch").addEventListener("input", () => renderStocks(model()));
 $("#spSearch").addEventListener("input", renderSpending);
 $("#spMonth").addEventListener("change", e => { spMonthSel = e.target.value; renderSpending(); });

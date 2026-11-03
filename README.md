@@ -3,6 +3,7 @@
 A private personal-finance site: **net worth, stocks, spending and trends / FI projections**, fed live from **LHV** and **Interactive Brokers**.
 
 - Each person runs **their own copy** with **their own free Supabase project**. Nobody shares data with anyone.
+- Price history for the Insights page comes from Yahoo Finance's public data. Only ticker symbols are sent, never amounts.
 - Bank access is **read-only**. LHV login tokens and the IBKR token are **encrypted** in your database and never reach the browser.
 - Only **one account** can ever log in to a copy: the first one created on it.
 
@@ -45,6 +46,7 @@ supabase link --project-ref YOUR_PROJECT_REF      # shown in Project Settings â†
 supabase functions deploy lhv --no-verify-jwt
 supabase functions deploy ibkr --no-verify-jwt
 supabase functions deploy account --no-verify-jwt
+supabase functions deploy prices --no-verify-jwt
 ```
 
 `--no-verify-jwt` is needed because the functions check your login themselves. LHV's login page also has to be able to send you back to the site.
@@ -78,7 +80,7 @@ In the site, click **Connect LHV**. A new tab opens: log in with Smart-ID / Mobi
    - **Account Information**: Currency
    - **Open Positions** (Summary): Symbol, Description, Asset Class, Currency, FX Rate To Base, Quantity, Mark Price, Position Value, Cost Basis Price, Unrealized P/L, Level of Detail
    - **Cash Report**: Currency, Ending Cash
-   - **Net Asset Value (NAV) in Base**: Cash, Total
+   - **Net Asset Value (NAV) in Base**: Report Date, Cash, Total
    - **Cash Transactions** (Detail): Currency, FX Rate To Base, Symbol, Description, Date/Time, Amount, Type. This is used for dividends.
    - **Format:** XML. **Period:** Last 365 Calendar Days. **Include Currency Rates:** Yes. Save it, and note the **Query ID** (a number).
 3. On the same page, open **Flex Web Service Configuration**. Enable it and **generate a token**, choosing the longest validity.

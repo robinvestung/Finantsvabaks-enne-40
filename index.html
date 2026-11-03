@@ -144,6 +144,7 @@ a.lnk{color:var(--gold-2)}
       <a href="#networth" data-v="networth">Net worth</a>
       <a href="#stocks" data-v="stocks">Stocks</a>
       <a href="#spending" data-v="spending">Spending</a>
+      <a href="#insights" data-v="insights">Insights</a>
       <a href="#trends" data-v="trends">Trends</a>
     </nav>
     <div class="spacer"></div>
@@ -204,6 +205,30 @@ a.lnk{color:var(--gold-2)}
     <div class="card glass section">
       <h3>All holdings <span class="r"><input id="stSearch" placeholder="Filter…" style="padding:6px 10px;width:160px"></span></h3>
       <div class="tbl-wrap"><table id="stTable"></table></div>
+    </div>
+  </section>
+
+  <!-- INSIGHTS -->
+  <section class="view" id="v-insights">
+    <div class="hero glass">
+      <div style="flex:1">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap"><h1 class="hero-label" id="inLabel" style="flex:1">Your investments</h1><span class="seg" id="inPeriods"></span></div>
+        <div class="big num" id="inTotal">—</div>
+        <div class="sub" id="inSub">&nbsp;</div>
+      </div>
+    </div>
+    <div class="grid g4" id="inKpis"></div>
+    <div class="card glass section">
+      <h3 id="inChartTitle">Value of your current holdings</h3>
+      <div class="chartbox" style="height:260px"><canvas id="inChart"></canvas></div>
+    </div>
+    <div class="grid g2 section">
+      <div class="card glass"><h3>Biggest gains</h3><div class="bars" id="inGains"></div></div>
+      <div class="card glass"><h3>Biggest falls</h3><div class="bars" id="inFalls"></div></div>
+    </div>
+    <div class="card glass section">
+      <h3>Every holding</h3>
+      <div class="tbl-wrap"><table id="inTable"></table></div>
     </div>
   </section>
 
@@ -372,6 +397,6 @@ a.lnk{color:var(--gold-2)}
 <div class="tip" id="tip"></div>
 <div class="toast glass" id="toast"></div>
 
-<script src="app.js?v=7"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>
