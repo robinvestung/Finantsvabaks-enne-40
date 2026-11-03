@@ -24,7 +24,7 @@ async function fetchStatement(cfg: Cfg): Promise<string> {
   const base = send.match(/<Url>([^<]*)<\/Url>/)?.[1] || `${FLEX}/GetStatement`;
   for (let i = 0; i < 12; i++) {
     const xml = await (await fetch(`${base}?t=${encodeURIComponent(cfg.token)}&q=${ref}&v=3`)).text();
-    if (xml.includes("<FlexQueryResponse") || xml.includes("<FlexStatement")) return xml;
+    if (xml.includes("<FlexQueryResponse") || xml.includes("<FlexStatements")) return xml; // note: "<FlexStatementResponse" = not ready / error
     const code = xml.match(/<ErrorCode>(\d+)<\/ErrorCode>/)?.[1];
     if (code && !["1019", "1018"].includes(code)) throw Object.assign(new Error(xml.match(/<ErrorMessage>([^<]*)/)?.[1] || "IBKR error"), { code: "ibkr_error" });
     await new Promise((r) => setTimeout(r, 2500));
