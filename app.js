@@ -199,14 +199,19 @@ function lhvFx(ccy) {
 // "Pots": savings, growth and investment-only accounts. Money moved into them = saved & invested.
 function potIbans() {
   const set = new Set(S.lhv.accounts.filter(a => a.type === "GROWTH" || a.subtype === "SAVINGS").map(a => a.iban));
-  const listed = new Set(S.lhv.accounts.map(a => a.iban));
-  for (const a of (S.lhv.portfolio && S.lhv.portfolio.accounts) || []) if (!listed.has(a.iban)) set.add(a.iban);
+  for (const i of unlistedInvestIbans()) set.add(i);
   return set;
 }
+// Accounts whose money is invested in the market: LHV growth accounts (Kasvukonto) and separate securities accounts.
+// A current account that also holds a few shares stays a current account.
 function investIbans() {
   const set = new Set(S.lhv.accounts.filter(a => a.type === "GROWTH").map(a => a.iban));
-  for (const a of (S.lhv.portfolio && S.lhv.portfolio.accounts) || []) if ((a.positions || []).length) set.add(a.iban);
+  for (const i of unlistedInvestIbans()) set.add(i);
   return set;
+}
+function unlistedInvestIbans() {
+  const listed = new Set(S.lhv.accounts.map(a => a.iban));
+  return ((S.lhv.portfolio && S.lhv.portfolio.accounts) || []).filter(a => !listed.has(a.iban) && (a.positions || []).length).map(a => a.iban);
 }
 function categorize(tx, inv = investIbans()) {
   if (tx.dom === "FORX") return "Currency exchange";
@@ -438,8 +443,7 @@ function rebuiltHistory(M) {
   if (!lhvOk && !ibOk) return out;
   const nowK = ym(today());
   const eur = (v, ccy) => { const r = fxRate(ccy || "EUR"); return r == null ? 0 : (num(v) || 0) * r; };
-  const growthSet = new Set(S.lhv.accounts.filter(a => a.type === "GROWTH").map(a => a.iban));
-  for (const a of (S.lhv.portfolio && S.lhv.portfolio.accounts) || []) growthSet.add(a.iban);
+  const growthSet = investIbans();
   let lhvCashNow = 0, lhvGrowthNow = 0;
   for (const a of S.lhv.accounts) { const v = eur(a.availableBalance, a.currency); if (a.type === "GROWTH") lhvGrowthNow += v; else lhvCashNow += v; }
   for (const h of M.holdings) if (h.broker === "LHV") lhvGrowthNow += h.value || 0;
@@ -716,12 +720,18 @@ function savingStats(SM, n) {
   return { keys: ks, n: L, income: inc / L, spend: sp / L, usual: usual / L, saved, savedTotal: inc - sp, rate: inc > 0 ? (inc - sp) / inc : null,
     invested: inv / L, investShare: saved > 0 ? Math.min(1, Math.max(0, inv / L / saved)) : 0 };
 }
+// Cash interest across all cash: savings accounts earn their rate, current accounts and broker cash earn ~0
+function blendedCashRate(M) {
+  const rate = num((S.settings.plan || {}).savRate) ?? 1.75;
+  const sav = S.lhv.accounts.filter(a => a.subtype === "SAVINGS").reduce((s, a) => s + (num(a.availableBalance) || 0) * (fxRate(a.currency || "EUR") || 0), 0);
+  return M.cash > 0 ? Math.round(sav / M.cash * rate * 100) / 100 : rate;
+}
 function planDefaults(M, SM, win) {
   const st = savingStats(SM, win);
   return {
     contrib: st ? Math.round(st.saved / 10) * 10 : 500,
     share: st ? Math.round(st.investShare * 100) : 50,
-    ret: 7, cash: 2, infl: 2.5, grow: 0,
+    ret: 7, cash: blendedCashRate(M), infl: 2.5, grow: 0,
     spend: st && st.usual > 0 ? Math.round(st.usual * 12 / 100) * 100 : 18000, mult: 25, age: "", years: 30,
   };
 }
@@ -731,7 +741,7 @@ function readPlan(M, SM) {
   const d = planDefaults(M, SM, win);
   const set = k => p[k] !== undefined && p[k] !== "" && p[k] !== null;
   const g = k => set(k) ? p[k] : d[k];
-  return { win, auto: { contrib: !set("contrib"), share: !set("share"), spend: !set("spend") }, stats: savingStats(SM, win),
+  return { win, auto: { contrib: !set("contrib"), share: !set("share"), spend: !set("spend"), cash: !set("cash") }, savRate: num(p.savRate) ?? 1.75, stats: savingStats(SM, win),
     contrib: +g("contrib"), share: Math.min(100, Math.max(0, +g("share"))), ret: +g("ret"), cash: +g("cash"), infl: +g("infl"), grow: +g("grow"),
     spend: +g("spend"), mult: +g("mult"), age: g("age") === "" ? null : +g("age"), years: Math.min(60, Math.max(1, +g("years") || 30)) };
 }
@@ -754,7 +764,8 @@ function renderTrends() {
   const inputs = { trContrib: "contrib", trShare: "share", trReturn: "ret", trCash: "cash", trInfl: "infl", trGrow: "grow", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years" };
   for (const [id, k] of Object.entries(inputs)) { const i = document.getElementById(id); if (document.activeElement !== i) i.value = P[k] ?? ""; }
   $("#trWin").value = String(P.win);
-  for (const [id, k] of [["trContrib", "contrib"], ["trShare", "share"], ["trSpend", "spend"]]) document.getElementById(id).closest("label").classList.toggle("auto", P.auto[k]);
+  if (document.activeElement !== $("#trSavRate")) $("#trSavRate").value = P.savRate;
+  for (const [id, k] of [["trContrib", "contrib"], ["trShare", "share"], ["trSpend", "spend"], ["trCash", "cash"]]) document.getElementById(id).closest("label").classList.toggle("auto", P.auto[k]);
   const fiTarget = P.spend * P.mult;
   const months = P.years * 12;
   const start = M.total;
@@ -941,12 +952,12 @@ $("#btnCopyRaw").onclick = async () => {
 };
 
 // ---------- trends inputs ----------
-for (const [id, k] of Object.entries({ trContrib: "contrib", trShare: "share", trReturn: "ret", trCash: "cash", trInfl: "infl", trGrow: "grow", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years", trWin: "win" })) {
+for (const [id, k] of Object.entries({ trContrib: "contrib", trShare: "share", trReturn: "ret", trCash: "cash", trInfl: "infl", trGrow: "grow", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years", trWin: "win", trSavRate: "savRate" })) {
   const i = document.getElementById(id);
   i.addEventListener(i.tagName === "SELECT" ? "change" : "input", () => { S.settings.plan = { ...(S.settings.plan || {}), [k]: i.value }; renderTrends(); savePlanSoon(); });
 }
 let planTimer; const savePlanSoon = () => { clearTimeout(planTimer); planTimer = setTimeout(() => { if (!S.demo) Store.set("settings", S.settings); }, 1200); };
-$("#trReset").onclick = () => { const p = S.settings.plan || {}; S.settings.plan = { age: p.age, win: p.win }; renderTrends(); savePlanSoon(); };
+$("#trReset").onclick = () => { const p = S.settings.plan || {}; S.settings.plan = { age: p.age, win: p.win, savRate: p.savRate }; renderTrends(); savePlanSoon(); };
 
 // ---------- misc controls ----------
 try { if (localStorage.getItem("mymoney:hide") === "1") document.body.classList.add("hide-amounts"); } catch { }
