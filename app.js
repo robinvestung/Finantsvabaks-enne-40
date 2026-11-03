@@ -783,6 +783,7 @@ function openSettings() {
   const dot = st => el("i", { class: "dot " + (st.status === "ok" ? "ok" : st.status === "error" ? "err" : "") });
   conn.append(el("div", { class: "list-item" }, dot(S.lhv), el("span", { style: "flex:1" }, "LHV"),
     el("button", { class: "btn", onclick: connectLHV }, S.lhv.status === "ok" ? "Log in again" : "Connect LHV"),
+    el("button", { class: "btn ghost", onclick: showLhvPaste }, "Paste LHV address"),
     S.lhv.status === "ok" ? el("button", { class: "btn ghost", onclick: async () => { await fn("lhv", "disconnect"); toast("LHV disconnected"); loadLHV(true); } }, "Disconnect") : null));
   const tok = el("input", { placeholder: "Flex token", type: "password", autocomplete: "off" });
   const qid = el("input", { placeholder: "Query ID", style: "flex:0 0 120px" });
@@ -978,8 +979,9 @@ async function connectLHV() {
   const tab = window.open("about:blank", "_blank"); // open now, while we still have the click
   try {
     const r = await fn("lhv", "connect", { return_to: location.origin + location.pathname });
-    if (tab) tab.location.href = r.url; else window.open(r.url, "_blank");
-    showLhvPaste();
+    try { localStorage.setItem("mymoney:lhvPending", String(Date.now())); } catch { }
+    if (tab && !tab.closed) { tab.location.href = r.url; showLhvPaste(); }
+    else location.href = r.url; // popup blocked: go in this tab; the box reopens when you come back
   } catch (e) { if (tab) tab.close(); toast((e && e.message) || "Couldn't start LHV login"); }
 }
 function showLhvPaste() {
@@ -989,7 +991,7 @@ function showLhvPaste() {
   const box = el("div", { style: "position:fixed;inset:0;z-index:45;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,8,5,.45)" });
   const done = el("button", { class: "btn primary", onclick: async () => {
     msg.textContent = "Connecting…";
-    try { await fn("lhv", "finish", { url: input.value }); box.remove(); toast("LHV connected"); loadLHV(true); }
+    try { await fn("lhv", "finish", { url: input.value }); try { localStorage.removeItem("mymoney:lhvPending"); } catch { } box.remove(); toast("LHV connected"); loadLHV(true); }
     catch (e) { msg.textContent = (e && e.message) || "That didn't work. Try Connect LHV again."; }
   } }, "Finish connecting");
   box.append(el("div", { class: "glass", style: "width:min(560px,100%);padding:26px;display:flex;flex-direction:column;gap:12px" },
@@ -1045,6 +1047,7 @@ async function boot() {
   S.ibkr = { status: "idle", positions: [], cash: null, netLiq: null, currency: null, error: null, raw: null, fetchedAt: null };
   S.mcp = LHVAPI;
   renderAll();
+  try { const t = +localStorage.getItem("mymoney:lhvPending"); if (t && Date.now() - t < 15 * 60e3) showLhvPaste(); else localStorage.removeItem("mymoney:lhvPending"); } catch { }
   loadLHV(false); loadIBKR(false);
 }
 boot();

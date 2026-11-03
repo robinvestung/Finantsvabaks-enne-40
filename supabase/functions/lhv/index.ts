@@ -5,7 +5,9 @@ import { admin, cors, delConn, fail, getConn, json, open, ownerFrom, randomStrin
 const MCP_URL = "https://mcp.lhv.ai/mcp";
 const AUTH = "https://auth.lhv.ai/oauth2";
 const SCOPE = "accounts:read transactions:read";
-const REDIRECT = `${SUPABASE_URL}/functions/v1/lhv/callback`;
+// LHV only allows redirects to localhost (or hosts it has approved). The browser lands on this
+// localhost address after login; you paste that address back into the site, which finishes here.
+const REDIRECT = "http://localhost:53682/lhv-callback";
 const ALLOWED_TOOLS = new Set(["list_accounts", "get_instrument_balances", "get_account_statement"]);
 
 type Tokens = { access: string; refresh?: string; exp: number };
@@ -138,6 +140,20 @@ Deno.serve(async (req) => {
         code_challenge: await sha256b64url(verifier), code_challenge_method: "S256", resource: MCP_URL,
       });
       return json({ url: `${AUTH}/authorize?${q}` });
+    }
+    if (route === "finish") {
+      let u: URL;
+      try { u = new URL(String(body.url || "").trim()); } catch { return fail("bad_request", "Paste the whole address from the browser tab."); }
+      if (u.searchParams.get("error")) return fail("lhv_declined", "LHV login was cancelled.");
+      const state = u.searchParams.get("state") || "", code = u.searchParams.get("code") || "";
+      if (!state || !code) return fail("bad_request", "That address doesn't contain a login code. Copy it again after logging in.");
+      const { data: st } = await admin.from("oauth_state").select("*").eq("state", state).eq("user_id", user.id).maybeSingle();
+      if (!st) return fail("lhv_expired", "This login link was already used or doesn't belong to you. Click Connect LHV again.");
+      await admin.from("oauth_state").delete().eq("state", state);
+      if (Date.now() - new Date(st.created_at).getTime() > 15 * 60e3) return fail("lhv_expired", "That login is older than 15 minutes. Click Connect LHV again.");
+      const t = await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: st.verifier });
+      await setConn(user.id, "lhv", t);
+      return json({ ok: true });
     }
     if (route === "status") return json({ connected: !!(await getConn(user.id, "lhv")) });
     if (route === "disconnect") { await delConn(user.id, "lhv"); return json({ ok: true }); }
