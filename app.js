@@ -656,7 +656,7 @@ function divKpi() {
   return kpi("Dividends · 12 months", parts.length ? fmt(ibNet + lhv) : "—", parts.length ? parts.join(" · ") : "Connect a broker to see dividends", COLORS[2]);
 }
 
-let spMonthSel = null;
+let spMonthSel = null, spCat = null; // spCat: exact category picked from the chart
 function renderSpending() {
   const SM = spendModel();
   const sel = $("#spMonth");
@@ -706,9 +706,10 @@ function renderSpending() {
   const gross = cats.reduce((a, [, v]) => a + v, 0) || 1;
   const catRows = cats.map(([label, value]) => ({ label, value, color: catColor[label] || "#8a7a63", note: Math.round(value / gross * 100) + "%" }));
   if (m.paidBack > 0.5) catRows.push({ label: "Paid back to you", value: -m.paidBack, text: "−" + fmt(m.paidBack), color: "#6cc07a", cls: "up" });
-  bars($("#spCats"), catRows, { empty: "No spending this month.", onclick: r => { if (r.label !== "Paid back to you") { $("#spSearch").value = r.label; renderSpending(); } } });
+  bars($("#spCats"), catRows, { empty: "No spending this month.", onclick: r => { if (r.label !== "Paid back to you") { spCat = spCat === r.label ? null : r.label; renderSpending(); } } });
   const q = ($("#spSearch").value || "").toLowerCase();
-  const rows = SM.tx.filter(t => t.mk === spMonthSel && (!q || (t.merchant + " " + t.desc + " " + t.cat).toLowerCase().includes(q)));
+  const chip = $("#spCatChip"); chip.style.display = spCat ? "" : "none"; chip.textContent = spCat ? spCat + "  ✕" : "";
+  const rows = SM.tx.filter(t => t.mk === spMonthSel && (!spCat || t.cat === spCat) && (!q || (t.merchant + " " + t.desc + " " + t.cat).toLowerCase().includes(q)));
   const accName = Object.fromEntries(S.lhv.accounts.map(a => [a.iban, a.name]));
   const allCats = [...new Set(["Groceries", "Eating out", "Free time & entertainment", "Clothing", "Car", "Transport", "Travel", "Subscriptions", "Sport", "Bills", "Home", "Shopping", "Health", "Shared with girlfriend", "Family", "Payments to people", "Refunds", "Salary", "Income", "Dividends & interest", "Investing", "One-off", "Excluded", "Other", ...S.settings.rules.map(r => r.category)])].filter(Boolean);
   table($("#spTable"), [
@@ -1078,6 +1079,7 @@ $("#btnHide").onclick = () => { document.body.classList.toggle("hide-amounts"); 
 $("#btnRefresh").onclick = () => { if (S.demo || !S.mcp) return; S.prices.sig = ""; loadLHV(true); loadIBKR(true); };
 $("#stSearch").addEventListener("input", () => renderStocks(model()));
 $("#spSearch").addEventListener("input", renderSpending);
+$("#spCatChip").onclick = () => { spCat = null; renderSpending(); };
 $("#spMonth").addEventListener("change", e => { spMonthSel = e.target.value; renderSpending(); });
 
 // ---------- demo data (made up, for friends to preview) ----------
