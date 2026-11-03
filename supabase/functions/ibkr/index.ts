@@ -69,7 +69,10 @@ function parse(xml: string) {
     if (isDiv || isTax) dividends.push({ date, sym: t.symbol || "", kind: isDiv ? "div" : "tax", amount: Math.round(amt * rate * 100) / 100 });
     else if (type.includes("deposit")) deposits += amt * rate;
   }
-  return { currency: base, positions, fx, cash: n(cashRow?.endingCash) ?? n(nav?.cash), netLiq: n(nav?.total), asOf, dividends, deposits: Math.round(deposits * 100) / 100 };
+  // Daily account value over the period (used to rebuild net-worth history)
+  const ymd = (v?: string) => { const r = (v || "").replace(/[^0-9]/g, "").slice(0, 8); return r.length === 8 ? `${r.slice(0, 4)}-${r.slice(4, 6)}-${r.slice(6, 8)}` : ""; };
+  const navHistory = navRows.map((r) => ({ d: ymd(r.reportDate), v: n(r.total) })).filter((r) => r.d && r.v != null);
+  return { currency: base, positions, fx, cash: n(cashRow?.endingCash) ?? n(nav?.cash), netLiq: n(nav?.total), asOf, dividends, deposits: Math.round(deposits * 100) / 100, navHistory, navRows: navRows.length };
 }
 
 Deno.serve(async (req) => {

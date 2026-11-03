@@ -93,6 +93,9 @@ input,select{font:inherit;color:var(--fg);background:rgba(0,0,0,.25);border:1px 
 input:focus,select:focus{border-color:var(--gold)}
 select option{background:#2a2018}
 label.f{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12.5px}
+label.f.auto::after{content:"auto";position:absolute;right:10px;bottom:10px;font-size:10px;color:#14907a;letter-spacing:.04em;pointer-events:none}
+label.f.auto{position:relative}
+.autotag{color:#14907a;font-weight:500}
 .form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 .view{display:none}
 .view.on{display:block;animation:fade .25s ease}
@@ -234,16 +237,22 @@ a.lnk{color:var(--gold-2)}
       </div>
     </div>
     <div class="card glass">
-      <h3>Assumptions <span class="r subtle">Pre-filled from your data. Edit any value.</span></h3>
+      <h3>Assumptions <span class="r subtle">Fields marked <b class="autotag">auto</b> follow your real numbers. Type to override.</span></h3>
       <div class="form-row">
-        <label class="f">Saved per month (€)<input id="trContrib" type="number" step="10" style="width:150px"></label>
-        <label class="f">Expected return / yr (%)<input id="trReturn" type="number" step="0.5" style="width:130px"></label>
-        <label class="f">Spending / yr (€)<input id="trSpend" type="number" step="100" style="width:140px"></label>
-        <label class="f">FI multiple (× spending)<input id="trMult" type="number" step="1" style="width:120px"></label>
-        <label class="f">Your age (optional)<input id="trAge" type="number" step="1" style="width:110px"></label>
-        <label class="f">Years ahead<input id="trYears" type="number" step="1" style="width:100px"></label>
-        <button class="btn ghost" id="trReset">Reset to my data</button>
+        <label class="f">Base my pace on the last<select id="trWin" style="width:130px"><option value="3">3 months</option><option value="4">4 months</option><option value="5">5 months</option><option value="6">6 months</option><option value="12">12 months</option></select></label>
+        <label class="f">Saved per month (€)<input id="trContrib" type="number" step="10" style="width:130px"></label>
+        <label class="f">…of which invested (%)<input id="trShare" type="number" step="5" min="0" max="100" style="width:120px"></label>
+        <label class="f">Spending / yr (€)<input id="trSpend" type="number" step="100" style="width:130px"></label>
+        <label class="f">Investment return / yr (%)<input id="trReturn" type="number" step="0.5" style="width:120px"></label>
+        <label class="f">Cash interest / yr (%)<input id="trCash" type="number" step="0.25" style="width:110px"></label>
+        <label class="f">Inflation / yr (%)<input id="trInfl" type="number" step="0.25" style="width:110px"></label>
+        <label class="f">Raise savings / yr (%)<input id="trGrow" type="number" step="0.5" style="width:110px"></label>
+        <label class="f">FI multiple (× spending)<input id="trMult" type="number" step="1" style="width:110px"></label>
+        <label class="f">Your age<input id="trAge" type="number" step="1" style="width:90px"></label>
+        <label class="f">Years ahead<input id="trYears" type="number" step="1" style="width:90px"></label>
+        <button class="btn ghost" id="trReset">Back to my real numbers</button>
       </div>
+      <div class="subtle" id="trWhatIf" style="margin-top:10px"></div>
     </div>
     <div class="grid g4 section" id="trKpis"></div>
     <div class="card glass section">
@@ -257,7 +266,7 @@ a.lnk{color:var(--gold-2)}
         <div class="tbl-wrap"><table id="trMilestones"></table></div>
       </div>
       <div class="card glass">
-        <h3>Saved per month (income − spending), last 12 full months</h3>
+        <h3>Saved per month (income − spending) <span class="r subtle">bright = months your pace is based on</span></h3>
         <div class="chartbox sm"><canvas id="trSaveChart"></canvas></div>
       </div>
     </div>

@@ -300,8 +300,9 @@ async function loadIBKR(refresh) {
   try {
     const r = await fn("ibkr", "sync", { refresh: !!refresh });
     const d = r.data || {};
-    Object.assign(I, { currency: d.currency || "EUR", positions: d.positions || [], cash: d.cash, netLiq: d.netLiq, fx: d.fx || {}, dividends: d.dividends || [], raw: d, status: "ok", fetchedAt: d.fetchedAt || Date.now() });
+    Object.assign(I, { currency: d.currency || "EUR", positions: d.positions || [], cash: d.cash, netLiq: d.netLiq, fx: d.fx || {}, dividends: d.dividends || [], navHistory: d.navHistory || [], raw: d, status: "ok", fetchedAt: d.fetchedAt || Date.now() });
     if (r.warning) toast("IBKR: showing last saved numbers (" + r.warning + ")");
+    if (!refresh && d.navHistory === undefined) { setTimeout(() => loadIBKR(true), 0); return; }
   } catch (e) { I.status = "error"; I.error = e; }
   renderChips(); renderAll();
 }
@@ -417,11 +418,49 @@ async function doSnapshot(M) {
   S.history = { points: next };
   await Store.set("history", S.history);
 }
-function historySeries() {
+function historySeries(M) {
+  const byMonth = {}, est = {};
+  if (M) for (const [k, v] of Object.entries(rebuiltHistory(M))) { byMonth[k] = v; est[k] = true; }
   const pts = [...(S.history.points || []), ...(S.settings.backfill || []).filter(b => b.d && num(b.nw) != null).map(b => ({ d: b.d, nw: num(b.nw) }))];
-  const byMonth = {};
-  for (const p of pts.sort((a, b) => a.d.localeCompare(b.d))) byMonth[ym(p.d)] = p.nw;
+  for (const p of pts.sort((a, b) => a.d.localeCompare(b.d))) { byMonth[ym(p.d)] = p.nw; delete est[ym(p.d)]; }
+  Object.defineProperty(byMonth, "_est", { value: est, enumerable: false });
   return byMonth;
+}
+
+// Net worth at each of the last 12 month-ends, rebuilt from data we already have:
+// IBKR = its own daily account value; LHV accounts = today's balance minus every transaction since;
+// LHV growth/investment accounts = today's value minus money moved in since (their market moves are not rebuilt);
+// pension, other assets and debts = held at today's value.
+function monthEnd(k) { const [y, m] = k.split("-").map(Number); return k + "-" + String(new Date(y, m, 0).getDate()).padStart(2, "0"); }
+function rebuiltHistory(M) {
+  const out = {};
+  const lhvOk = S.lhv.status === "ok" && S.lhv.tx.length, ibOk = S.ibkr.status === "ok";
+  if (!lhvOk && !ibOk) return out;
+  const nowK = ym(today());
+  const eur = (v, ccy) => { const r = fxRate(ccy || "EUR"); return r == null ? 0 : (num(v) || 0) * r; };
+  const growthSet = new Set(S.lhv.accounts.filter(a => a.type === "GROWTH").map(a => a.iban));
+  for (const a of (S.lhv.portfolio && S.lhv.portfolio.accounts) || []) growthSet.add(a.iban);
+  let lhvCashNow = 0, lhvGrowthNow = 0;
+  for (const a of S.lhv.accounts) { const v = eur(a.availableBalance, a.currency); if (a.type === "GROWTH") lhvGrowthNow += v; else lhvCashNow += v; }
+  for (const h of M.holdings) if (h.broker === "LHV") lhvGrowthNow += h.value || 0;
+  const ibNow = M.holdings.filter(h => h.broker === "IBKR").reduce((s, h) => s + h.value, 0) + M.cashRows.filter(r => r.inst === "IBKR").reduce((s, r) => s + r.value, 0);
+  const fixed = M.other + M.debt;
+  const nav = (S.ibkr.navHistory || []).slice().sort((a, b) => a.d.localeCompare(b.d));
+  const ibBase = fxRate(S.ibkr.currency || "EUR") || 1;
+  const cashIbans = new Set(S.lhv.accounts.filter(a => a.type !== "GROWTH").map(a => a.iban));
+  for (let i = 12; i >= 1; i--) {
+    const k = addMonths(nowK, -i), end = monthEnd(k);
+    let cash = lhvCashNow, growth = lhvGrowthNow;
+    if (lhvOk) for (const t of S.lhv.tx) {
+      if (t.date <= end || t.noFx) continue;
+      cash -= t.amount;
+      if (t.cpAcc && growthSet.has(t.cpAcc) && !cashIbans.has(t.cpAcc)) growth += t.amount; // money moved into a growth account after this month
+    }
+    let ib = ibNow;
+    if (ibOk && nav.length) { let row = null; for (const r of nav) { if (r.d <= end) row = r; else break; } ib = (row || nav[0]).v * ibBase; }
+    out[k] = cash + Math.max(0, growth) + ib + fixed;
+  }
+  return out;
 }
 
 // ---------- render ----------
@@ -663,47 +702,79 @@ function renderSpending() {
 }
 
 let planTouched = false;
-function planDefaults(M, SM) {
+// Your recent saving: averages over the last n full months
+function savingStats(SM, n) {
+  const cur = ym(today());
+  const ks = SM.keys.filter(k => k < cur).slice(-n);
+  if (!ks.length) return null;
+  const inWin = new Set(ks); const invSet = investIbans();
+  let inc = 0, sp = 0, usual = 0, inv = 0;
+  for (const k of ks) { const m = SM.months[k]; inc += m.income; sp += m.spend; usual += m.spend - m.oneoff; }
+  // money that went into investments (brokers, LHV growth/investment accounts), net of withdrawals; savings deposits don't count
+  for (const t of SM.tx) if (inWin.has(t.mk) && !t.noFx && (t.cat === "Investing" || (t.cpAcc && invSet.has(t.cpAcc)))) inv += -t.amount;
+  const L = ks.length, saved = (inc - sp) / L;
+  return { keys: ks, n: L, income: inc / L, spend: sp / L, usual: usual / L, saved, savedTotal: inc - sp, rate: inc > 0 ? (inc - sp) / inc : null,
+    invested: inv / L, investShare: saved > 0 ? Math.min(1, Math.max(0, inv / L / saved)) : 0 };
+}
+function planDefaults(M, SM, win) {
+  const st = savingStats(SM, win);
   return {
-    contrib: SM.avgSave != null ? Math.max(0, Math.round(SM.avgSave / 10) * 10) : 500,
-    ret: 7, spend: SM.avgSpend != null ? Math.round(SM.avgSpend * 12 / 100) * 100 : 18000, mult: 25, age: "", years: 30,
+    contrib: st ? Math.round(st.saved / 10) * 10 : 500,
+    share: st ? Math.round(st.investShare * 100) : 50,
+    ret: 7, cash: 2, infl: 2.5, grow: 0,
+    spend: st && st.usual > 0 ? Math.round(st.usual * 12 / 100) * 100 : 18000, mult: 25, age: "", years: 30,
   };
 }
 function readPlan(M, SM) {
-  const d = planDefaults(M, SM); const p = S.settings.plan || {};
-  const g = (k) => (p[k] !== undefined && p[k] !== "" && p[k] !== null) ? p[k] : d[k];
-  return { contrib: +g("contrib"), ret: +g("ret"), spend: +g("spend"), mult: +g("mult"), age: g("age") === "" ? null : +g("age"), years: Math.min(60, Math.max(1, +g("years") || 30)) };
+  const p = S.settings.plan || {};
+  const win = [3, 4, 5, 6, 12].includes(+p.win) ? +p.win : 4;
+  const d = planDefaults(M, SM, win);
+  const set = k => p[k] !== undefined && p[k] !== "" && p[k] !== null;
+  const g = k => set(k) ? p[k] : d[k];
+  return { win, auto: { contrib: !set("contrib"), share: !set("share"), spend: !set("spend") }, stats: savingStats(SM, win),
+    contrib: +g("contrib"), share: Math.min(100, Math.max(0, +g("share"))), ret: +g("ret"), cash: +g("cash"), infl: +g("infl"), grow: +g("grow"),
+    spend: +g("spend"), mult: +g("mult"), age: g("age") === "" ? null : +g("age"), years: Math.min(60, Math.max(1, +g("years") || 30)) };
 }
-function project(start, monthly, ratePct, months) {
-  const r = Math.pow(1 + ratePct / 100, 1 / 12) - 1; const out = [start]; let v = start;
-  for (let i = 1; i <= months; i++) { v = v * (1 + r) + monthly; out.push(v); }
+// Monthly simulation in today's euros: investments grow at (return − inflation), cash at (interest − inflation).
+// Each month you add your saving: the invested share goes to investments, the rest stays as cash.
+function project(cash0, inv0, P, retPct, months) {
+  const real = pct => Math.pow((1 + pct / 100) / (1 + P.infl / 100), 1 / 12) - 1;
+  const ri = real(retPct), rc = real(P.cash), g = Math.pow(1 + P.grow / 100, 1 / 12) - 1;
+  let c = cash0, v = inv0, k = P.contrib; const out = [c + v];
+  for (let i = 1; i <= months; i++) {
+    const toInv = k > 0 ? k * P.share / 100 : 0;
+    v = v * (1 + ri) + toInv; c = c * (1 + (c > 0 ? rc : 0)) + (k - toInv);
+    if (c < 0 && v > 0) { const take = Math.min(v, -c); v -= take; c += take; } // spend from investments when cash runs out
+    k *= 1 + g; out.push(c + v);
+  }
   return out;
 }
 function renderTrends() {
-  const M = model(); const SM = spendModel(); const P = readPlan(M, SM);
-  const inputs = { trContrib: "contrib", trReturn: "ret", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years" };
+  const M = model(); const SM = spendModel(); const P = readPlan(M, SM); const st = P.stats;
+  const inputs = { trContrib: "contrib", trShare: "share", trReturn: "ret", trCash: "cash", trInfl: "infl", trGrow: "grow", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years" };
   for (const [id, k] of Object.entries(inputs)) { const i = document.getElementById(id); if (document.activeElement !== i) i.value = P[k] ?? ""; }
+  $("#trWin").value = String(P.win);
+  for (const [id, k] of [["trContrib", "contrib"], ["trShare", "share"], ["trSpend", "spend"]]) document.getElementById(id).closest("label").classList.toggle("auto", P.auto[k]);
   const fiTarget = P.spend * P.mult;
   const months = P.years * 12;
   const start = M.total;
-  const base = project(start, P.contrib, P.ret, months);
-  const low = project(start, P.contrib, Math.max(0, P.ret - 3), months);
-  const high = project(start, P.contrib, P.ret + 3, months);
-  const hist = historySeries(); const histKeys = Object.keys(hist).sort();
+  const cash0 = M.cash, inv0 = M.inv + M.other + M.debt;
+  const base = project(cash0, inv0, P, P.ret, months);
+  const low = project(cash0, inv0, P, P.ret - 2, months);
+  const high = project(cash0, inv0, P, P.ret + 2, months);
+  const hist = historySeries(M); const est = hist._est || {}; const histKeys = Object.keys(hist).sort();
   const nowK = ym(today());
   const firstK = histKeys.length ? (histKeys[0] < nowK ? histKeys[0] : nowK) : nowK;
   const labels = []; for (let k = firstK; k <= addMonths(nowK, months); k = addMonths(k, 1)) labels.push(k);
   const idxNow = labels.indexOf(nowK);
   const pad = arr => labels.map((_, i) => i < idxNow ? null : arr[i - idxNow]);
   const histData = labels.map(k => k < nowK ? (hist[k] ?? null) : k === nowK ? start : null);
-  // historical pace (linear): only with ≥3 months of history
-  let pace = null;
-  const hk = histKeys.filter(k => k < nowK);
-  if (hk.length >= 2) {
-    const k0 = hk[0]; const n = labels.indexOf(nowK) - labels.indexOf(k0);
-    if (n >= 3) pace = (start - hist[k0]) / n;
+  // what actually happened over the window: change in net worth = what you saved + everything else (markets, dividends, pension)
+  let past = null;
+  if (st) {
+    const k0 = addMonths(st.keys[0], -1), k1 = st.keys[st.keys.length - 1];
+    if (hist[k0] != null && hist[k1] != null) { const d = hist[k1] - hist[k0]; past = { d, saved: st.savedTotal, market: d - st.savedTotal, est: !!(est[k0] || est[k1]) }; }
   }
-  const paceLine = pace != null ? labels.map((_, i) => i < idxNow ? null : start + pace * (i - idxNow)) : null;
   const hitIdx = arr => { const i = arr.findIndex(v => v >= fiTarget); return i < 0 ? null : i; };
   const fiI = hitIdx(base);
   const fiDate = fiI != null ? addMonths(nowK, fiI) : null;
@@ -711,48 +782,56 @@ function renderTrends() {
   $("#trHead").textContent = fiI == null ? "Beyond " + P.years + " yrs" : fiI === 0 ? "Reached" : monthName(fiDate);
   const sub = $("#trSub"); sub.replaceChildren();
   sub.append("Target ", amt(fmt(fiTarget)), ` (${P.mult}× your yearly spending of `, amt(fmt(P.spend)), ")");
-  if (fiI != null && fiI > 0) sub.append(` · in ${(fiI / 12).toFixed(1)} years` + (P.age ? `, at age ${Math.floor(P.age + fiI / 12)}` : ""));
+  if (fiI != null && fiI > 0) { const lo = hitIdx(high), hi = hitIdx(low); sub.append(` · in ${(fiI / 12).toFixed(1)} years` + (P.age ? `, at age ${Math.floor(P.age + fiI / 12)}` : "") + (lo != null && hi != null ? ` (range ${(lo / 12).toFixed(0)}–${(hi / 12).toFixed(0)} yrs)` : "")); }
+  sub.append(el("br"), el("span", { class: "subtle" }, "All future amounts are in today's euros, after " + P.infl + "% inflation."));
   const yr = n => base[Math.min(months, n * 12)];
   $("#trKpis").replaceChildren(
-    kpi("In 5 years", fmt(yr(5)), "Base case at " + P.ret + "%", COLORS[0]),
-    kpi("In 10 years", fmt(yr(10)), null, COLORS[0]),
-    kpi("In " + P.years + " years", fmt(base[months]), el("span", {}, "Range ", amt(fmt(low[months])), " – ", amt(fmt(high[months])))),
-    kpi("Of the final value, you put in", fmt(start + P.contrib * months), base[months] ? Math.round((start + P.contrib * months) / base[months] * 100) + "% · the rest is growth" : null));
+    kpi("Your saving pace", st ? signed(st.saved) + "/mo" : "—",
+      st ? el("span", {}, (st.rate != null ? Math.round(st.rate * 100) + "% of income" : "No income found") + " · avg of last " + st.n + " mo · " + Math.round(st.investShare * 100) + "% of it invested") : "Connect LHV to measure it", COLORS[2]),
+    kpi("Last " + (st ? st.n : P.win) + " months", past ? signed(past.d) : "—",
+      past ? el("span", {}, amt(signed(past.saved)), " saved · ", el("span", { class: cls(past.market) }, amt(signed(past.market))), " markets & other" + (past.est ? " (estimated)" : "")) : "Needs a few months of history", COLORS[0]),
+    kpi("In 10 years", fmt(yr(10)), "At your current pace, " + P.ret + "% return", COLORS[0]),
+    kpi("In " + P.years + " years", fmt(base[months]), el("span", {}, "Range ", amt(fmt(low[months])), " – ", amt(fmt(high[months])))));
   const leg = $("#trLegend"); leg.replaceChildren(
-    el("span", {}, el("i", { class: "ln", style: "background:#f2e9d8" }), "Actual"),
-    el("span", {}, el("i", { class: "ln", style: "background:" + COLORS[0] }), "Base " + P.ret + "%"),
-    el("span", { style: "color:" + COLORS[2] }, el("i", { class: "ln dash" }), el("span", { style: "color:var(--muted)" }, "Optimistic " + (P.ret + 3) + "%")),
-    el("span", { style: "color:" + COLORS[1] }, el("i", { class: "ln dash" }), el("span", { style: "color:var(--muted)" }, "Cautious " + Math.max(0, P.ret - 3) + "%")),
-    paceLine ? el("span", { style: "color:" + COLORS[6] }, el("i", { class: "ln dash" }), el("span", { style: "color:var(--muted)" }, "Same pace as so far (" + signed(pace) + "/mo)")) : null,
+    el("span", {}, el("i", { class: "ln", style: "background:#f2e9d8" }), "Past (rebuilt from IBKR & LHV)"),
+    el("span", {}, el("i", { class: "ln", style: "background:" + COLORS[0] }), "If you keep saving like the last " + P.win + " months"),
+    el("span", { style: "color:" + COLORS[2] }, el("i", { class: "ln dash" }), el("span", { style: "color:var(--muted)" }, "Markets +2%")),
+    el("span", { style: "color:" + COLORS[1] }, el("i", { class: "ln dash" }), el("span", { style: "color:var(--muted)" }, "Markets −2%")),
     el("span", {}, el("i", { class: "ln", style: "background:" + COLORS[3] }), "FI target"));
   const ds = [
-    { label: "Actual", data: histData, borderColor: "#f2e9d8", backgroundColor: "#f2e9d8", borderWidth: 2, pointRadius: 0, spanGaps: true, tension: .25 },
-    { label: "Base", data: pad(base), borderColor: COLORS[0], backgroundColor: "rgba(63,114,184,.12)", fill: false, borderWidth: 2, pointRadius: 0, tension: .2 },
-    { label: "Optimistic", data: pad(high), borderColor: COLORS[2], borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0 },
-    { label: "Cautious", data: pad(low), borderColor: COLORS[1], borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0 },
+    { label: "Net worth", data: histData, borderColor: "#f2e9d8", backgroundColor: "#f2e9d8", borderWidth: 2, pointRadius: 0, spanGaps: true, tension: .25 },
+    { label: "Your pace", data: pad(base), borderColor: COLORS[0], backgroundColor: "rgba(63,114,184,.12)", fill: false, borderWidth: 2, pointRadius: 0, tension: .2 },
+    { label: "Markets +2%", data: pad(high), borderColor: COLORS[2], borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0 },
+    { label: "Markets −2%", data: pad(low), borderColor: COLORS[1], borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0 },
+    { label: "FI target", data: labels.map(() => fiTarget), borderColor: COLORS[3], borderWidth: 1, pointRadius: 0 },
   ];
-  if (paceLine) ds.push({ label: "Same pace", data: paceLine, borderColor: COLORS[6], borderDash: [2, 4], borderWidth: 1.5, pointRadius: 0 });
-  ds.push({ label: "FI target", data: labels.map(() => fiTarget), borderColor: COLORS[3], borderWidth: 1, pointRadius: 0 });
   const yStep = labels.length > 300 ? 5 : labels.length > 150 ? 2 : 1;
   const yearTick = (v, i) => { const k = labels[i]; return k && k.endsWith("-01") && (+k.slice(0, 4)) % yStep === 0 ? k.slice(0, 4) : ""; };
   chart("trChart", { type: "line", data: { labels, datasets: ds },
     options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
       scales: { x: { grid: { display: false }, ticks: { callback: yearTick, autoSkip: false, maxRotation: 0 } }, y: { ticks: { callback: tickEur }, grid: { color: "rgba(214,186,140,.08)" }, border: { display: false } } },
-      plugins: { tooltip: { callbacks: { title: c => monthName(labels[c[0].dataIndex]), label: c => c.parsed.y == null ? null : " " + c.dataset.label + ": " + (hidden() ? "•••" : fmt(c.parsed.y)) } } } } });
+      plugins: { tooltip: { callbacks: { title: c => monthName(labels[c[0].dataIndex]) + (est[labels[c[0].dataIndex]] ? " (rebuilt)" : ""), label: c => c.parsed.y == null ? null : " " + c.dataset.label + ": " + (hidden() ? "•••" : fmt(c.parsed.y)) } } } } });
   const ms = [10000, 25000, 50000, 100000, 250000, 500000, 1000000].filter(v => v > start);
   const mrows = ms.map(v => ({ label: fmt(v), i: base.findIndex(x => x >= v) })).filter(r => r.i >= 0).slice(0, 6);
   if (fiI != null && fiI > 0) mrows.push({ label: "FI target · " + fmt(fiTarget), i: fiI, fi: true });
   mrows.sort((a, b) => a.i - b.i);
   table($("#trMilestones"), [
-    { h: "Net worth", v: r => r.fi ? el("b", {}, amt(r.label)) : amt(r.label) },
+    { h: "Net worth (today's €)", v: r => r.fi ? el("b", {}, amt(r.label)) : amt(r.label) },
     { h: "When", v: r => monthName(addMonths(nowK, r.i)) },
     { h: "From now", r: 1, v: r => r.i < 12 ? r.i + " mo" : (r.i / 12).toFixed(1) + " yrs" },
     ...(P.age ? [{ h: "Your age", r: 1, v: r => String(Math.floor(P.age + r.i / 12)) }] : []),
   ], mrows);
+  // what saving more would do: +€100/mo
+  const more = project(cash0, inv0, { ...P, contrib: P.contrib + 100 }, P.ret, months);
+  const fiMore = hitIdx(more);
+  $("#trWhatIf").textContent = fiI != null && fiMore != null && fiI > 0 ? `Saving €100 more per month would bring FI ${((fiI - fiMore) / 12).toFixed(1)} years sooner and add ${hidden() ? "•••" : fmt(more[months] - base[months])} by year ${P.years}.` : "";
   const last = SM.keys.filter(k => k < nowK).slice(-12);
-  chart("trSaveChart", { type: "bar", data: { labels: last.map(monthName), datasets: [{ label: "Saved", data: last.map(k => SM.months[k].income - SM.months[k].spend), backgroundColor: last.map(k => SM.months[k].income - SM.months[k].spend >= 0 ? COLORS[2] : COLORS[7]), borderRadius: 4, borderSkipped: "start" }] },
+  const win = new Set(st ? st.keys : []);
+  const sv = k => SM.months[k].income - SM.months[k].spend;
+  chart("trSaveChart", { type: "bar", data: { labels: last.map(monthName), datasets: [{ label: "Saved", data: last.map(sv),
+    backgroundColor: last.map(k => (sv(k) >= 0 ? COLORS[2] : COLORS[7]) + (win.has(k) ? "" : "55")), borderRadius: 4, borderSkipped: "start" }] },
     options: { responsive: true, maintainAspectRatio: false, scales: { x: { grid: { display: false } }, y: { ticks: { callback: tickEur }, grid: { color: "rgba(214,186,140,.08)" }, border: { display: false } } },
-      plugins: { tooltip: { callbacks: { label: c => " Saved: " + (hidden() ? "•••" : fmt(c.parsed.y)) } } } } });
+      plugins: { tooltip: { callbacks: { label: c => { const k = last[c.dataIndex], m = SM.months[k]; return hidden() ? " •••" : [" Saved: " + fmt(c.parsed.y) + (m.income > 0 ? " (" + Math.round(c.parsed.y / m.income * 100) + "% of income)" : ""), " Income " + fmt(m.income) + " · spent " + fmt(m.spend)]; } } } } } });
 }
 
 let renderQueued = false;
@@ -862,12 +941,12 @@ $("#btnCopyRaw").onclick = async () => {
 };
 
 // ---------- trends inputs ----------
-for (const [id, k] of Object.entries({ trContrib: "contrib", trReturn: "ret", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years" })) {
+for (const [id, k] of Object.entries({ trContrib: "contrib", trShare: "share", trReturn: "ret", trCash: "cash", trInfl: "infl", trGrow: "grow", trSpend: "spend", trMult: "mult", trAge: "age", trYears: "years", trWin: "win" })) {
   const i = document.getElementById(id);
-  i.addEventListener("input", () => { S.settings.plan = { ...(S.settings.plan || {}), [k]: i.value }; renderTrends(); savePlanSoon(); });
+  i.addEventListener(i.tagName === "SELECT" ? "change" : "input", () => { S.settings.plan = { ...(S.settings.plan || {}), [k]: i.value }; renderTrends(); savePlanSoon(); });
 }
 let planTimer; const savePlanSoon = () => { clearTimeout(planTimer); planTimer = setTimeout(() => { if (!S.demo) Store.set("settings", S.settings); }, 1200); };
-$("#trReset").onclick = () => { S.settings.plan = {}; renderTrends(); savePlanSoon(); };
+$("#trReset").onclick = () => { const p = S.settings.plan || {}; S.settings.plan = { age: p.age, win: p.win }; renderTrends(); savePlanSoon(); };
 
 // ---------- misc controls ----------
 try { if (localStorage.getItem("mymoney:hide") === "1") document.body.classList.add("hide-amounts"); } catch { }
