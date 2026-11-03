@@ -70,7 +70,7 @@ Open your site. The first time, it asks you to **create an account** and for you
 Then, in Supabase, go to **Authentication → Sign In / Providers** and turn **off "Allow new users to sign up"**. This is extra safety; strangers couldn't see anything anyway.
 
 ### 8. Connect LHV
-In the site, go to **⚙ Settings → Connect LHV** and log in with Smart-ID / Mobile-ID / ID-card. Approve read access to accounts and transactions. You'll come back to the site automatically. If LHV ever asks you to log in again, click the same button.
+In the site, click **Connect LHV**. A new tab opens: log in with Smart-ID / Mobile-ID / ID-card and approve read access. LHV then sends that tab to a `localhost` address that **won't load. That's expected**: LHV only allows returning to localhost. Copy the whole address from that tab and paste it into the box on the site, then click **Finish connecting**. The code in that address works once, only for your own login, and expires in minutes. After that the server keeps the connection alive; if LHV ever asks you to log in again, repeat this.
 
 ### 9. Connect Interactive Brokers (Flex Web Service)
 1. In IBKR **Client Portal**, go to **Performance & Reports → Flex Queries**.

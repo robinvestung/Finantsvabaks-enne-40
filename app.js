@@ -975,8 +975,31 @@ $("#bgFile").addEventListener("change", async e => {
 
 // ---------- LHV login ----------
 async function connectLHV() {
-  try { const r = await fn("lhv", "connect", { return_to: location.origin + location.pathname }); location.href = r.url; }
-  catch (e) { toast((e && e.message) || "Couldn't start LHV login"); }
+  const tab = window.open("about:blank", "_blank"); // open now, while we still have the click
+  try {
+    const r = await fn("lhv", "connect", { return_to: location.origin + location.pathname });
+    if (tab) tab.location.href = r.url; else window.open(r.url, "_blank");
+    showLhvPaste();
+  } catch (e) { if (tab) tab.close(); toast((e && e.message) || "Couldn't start LHV login"); }
+}
+function showLhvPaste() {
+  closeSettings();
+  const input = el("input", { placeholder: "http://localhost:53682/lhv-callback?code=…", style: "width:100%" });
+  const msg = el("div", { class: "subtle", style: "min-height:18px" });
+  const box = el("div", { style: "position:fixed;inset:0;z-index:45;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,8,5,.45)" });
+  const done = el("button", { class: "btn primary", onclick: async () => {
+    msg.textContent = "Connecting…";
+    try { await fn("lhv", "finish", { url: input.value }); box.remove(); toast("LHV connected"); loadLHV(true); }
+    catch (e) { msg.textContent = (e && e.message) || "That didn't work. Try Connect LHV again."; }
+  } }, "Finish connecting");
+  box.append(el("div", { class: "glass", style: "width:min(560px,100%);padding:26px;display:flex;flex-direction:column;gap:12px" },
+    el("div", { style: "font-size:18px;font-weight:500;color:#fff" }, "Finish connecting LHV"),
+    el("ol", { class: "subtle", style: "margin:0;padding-left:18px;line-height:1.6" },
+      el("li", {}, "Log in to LHV in the new tab with Smart-ID / Mobile-ID and approve access."),
+      el("li", {}, "The tab then shows a page that can't be reached. That's expected."),
+      el("li", {}, "Copy the whole address from that tab's address bar and paste it below.")),
+    input, msg, el("div", { style: "display:flex;gap:8px;justify-content:flex-end" }, el("button", { class: "btn ghost", onclick: () => box.remove() }, "Cancel"), done)));
+  document.body.append(box); input.focus();
 }
 $("#btnLogout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
