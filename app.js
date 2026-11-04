@@ -562,7 +562,9 @@ function renderChips() {
     if (!ibOff) c.append(chip("IBKR", S.ibkr));
   }
   const b = $("#banners"); b.replaceChildren();
-  if (S.demo) b.append(el("div", { class: "banner glass warn" }, el("div", { class: "msg" }, el("b", {}, "You're looking at made-up demo numbers. "), "Log out and back in to see your own money."), el("button", { class: "btn", onclick: () => { S.demo = false; boot(); } }, "Use my data")));
+  if (S.demo && S.publicDemo) b.append(el("div", { class: "banner glass warn" }, el("div", { class: "msg" }, el("b", {}, "Demo with made-up numbers. "), "This is what My Money looks like once your own bank is connected. Nothing here is real."),
+    CFG.repoUrl ? el("a", { class: "btn", href: CFG.repoUrl, target: "_blank", rel: "noopener" }, "Make your own") : null));
+  else if (S.demo) b.append(el("div", { class: "banner glass warn" }, el("div", { class: "msg" }, el("b", {}, "You're looking at made-up demo numbers. "), "Log out and back in to see your own money."), el("button", { class: "btn", onclick: () => { S.demo = false; boot(); } }, "Use my data")));
 
   for (const w of (!S.demo && S.lhv.warnings) || []) b.append(el("div", { class: "banner glass" }, el("div", { class: "msg" }, el("b", {}, (w.src === "lhv" ? "LHV" : "Bank") + ": "), errMsg(w.e, w.src === "lhv" ? "LHV" : "Bank")),
     el("button", { class: "btn primary", onclick: w.src === "lhv" ? connectLHV : openSettings }, w.src === "lhv" ? "Connect LHV" : "Open settings")));
@@ -936,7 +938,7 @@ function renderInsights(M) {
   const sub = $("#inSub"); sub.replaceChildren();
   if (known.length) sub.append(el("span", { class: cls(chg) }, pct(startVal ? chg / startVal * 100 : null, 2)), ` on ${known.length} of ${H.length} holdings · price moves only, based on what you hold now`);
   else sub.append(S.prices.status === "loading" ? "Loading prices…" : S.prices.status === "error" ? "Couldn't load prices right now." : "No price data yet.");
-  if (inPeriod === "day" && S.prices.at) sub.append(el("br"), el("span", { class: "subtle" }, "Live prices from Yahoo Finance (may be ~15 min delayed), checked " + new Date(S.prices.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })));
+  if (inPeriod === "day" && S.prices.at && !S.demo) sub.append(el("br"), el("span", { class: "subtle" }, "Live prices from Yahoo Finance (may be ~15 min delayed), checked " + new Date(S.prices.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })));
 
   const up = known.filter(r => r.m.pct > 0.005).length, down = known.filter(r => r.m.pct < -0.005).length;
   const best = known.slice().sort((a, b) => b.m.pct - a.m.pct)[0], worst = known.slice().sort((a, b) => a.m.pct - b.m.pct)[0];
@@ -1091,7 +1093,7 @@ $("#btnSave").onclick = async () => {
   if (acctChanged && S.mcp && !S.demo) loadIBKR(true);
   renderAll();
 };
-$("#btnDemo").onclick = () => { closeSettings(); startDemo(); };
+$("#btnDemo").onclick = () => { closeSettings(); startDemo(false); };
 $("#btnCopyRaw").onclick = async () => {
   try { await navigator.clipboard.writeText(JSON.stringify(S.ibkr.raw || { note: "IBKR hasn't answered yet" }, null, 2).slice(0, 200000)); toast("Copied"); }
   catch { toast("Your browser blocked copying"); }
@@ -1116,25 +1118,44 @@ $("#spCatChip").onclick = () => { spCat = null; renderSpending(); };
 $("#spMonth").addEventListener("change", e => { spMonthSel = e.target.value; renderSpending(); });
 
 // ---------- demo data (made up, for friends to preview) ----------
-function startDemo() {
-  S.demo = true;
-  const accts = [{ iban: "EE00DEMO1", currency: "EUR", availableBalance: 2140.55, type: "CURRENT", name: "Everyday" }, { iban: "EE00DEMO2", currency: "EUR", availableBalance: 6500, type: "CURRENT", name: "Savings" }, { iban: "EE00DEMO3", currency: "EUR", availableBalance: 12.4, type: "GROWTH", name: "Growth account" }];
-  const P = (symbol, name, q, price, buy, today) => ({ symbol, name, quantity: q, latestPrice: price, currency: "EUR", baseCurrencyMarketValue: q * price, baseCurrencyProfitLoss: q * (price - buy), todayChange: today });
-  S.lhv = { status: "ok", server: "demo", accounts: accts, fetchedAt: Date.now(), tx: [], portfolio: { accounts: [{ iban: "EE00DEMO3", positions: [P("VWCE", "Vanguard FTSE All-World", 42, 128.4, 104, .4), P("SXR8", "iShares Core S&P 500", 6, 610, 520, .6), P("EXXT", "iShares NASDAQ-100", 9, 236, 190, .9)] }] } };
-  S.ibkr = { status: "ok", currency: "EUR", cash: 310, netLiq: null, fetchedAt: Date.now(), positions: [{ sym: "MSFT", name: "Microsoft", qty: 4, price: 420, value: 1680, pnl: 210, ccy: "EUR" }, { sym: "AAPL", name: "Apple", qty: 6, price: 205, value: 1230, pnl: 95, ccy: "EUR" }] };
-  const own = new Set(accts.map(a => a.iban)); const tx = [];
-  const merchants = [["RIMI TALLINN", 34, "Groceries"], ["WOLT", 22], ["BOLT", 9], ["SPOTIFY", 11.99], ["PLAYTOMIC.IO", 18], ["SELVER", 41], ["TELIA EESTI", 25], ["ZALANDO", 60]];
+function startDemo(isPublic) {
+  S.demo = true; S.publicDemo = !!isPublic;
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const accts = [{ iban: "EE00DEMO1", currency: "EUR", availableBalance: 2140.55, type: "CURRENT", name: "Everyday" }, { iban: "EE00DEMO2", currency: "EUR", availableBalance: 6500, type: "CURRENT", subtype: "SAVINGS", name: "Savings" }, { iban: "EE00DEMO3", currency: "EUR", availableBalance: 12.4, type: "GROWTH", name: "Growth account" }];
+  const P = (symbol, name, q, price, buy, today) => ({ symbol, name, quantity: q, latestPrice: price, currency: "EUR", baseCurrencyMarketValue: q * price, baseCurrencyProfitLoss: q * (price - buy), todayChange: today });
+  S.lhv = { status: "ok", server: "demo", accounts: accts, fetchedAt: Date.now(), tx: [], warnings: [], portfolio: { accounts: [{ iban: "EE00DEMO3", positions: [P("VWCE", "Vanguard FTSE All-World", 42, 128.4, 104, .4), P("SXR8", "iShares Core S&P 500", 6, 610, 520, .6), P("EXXT", "iShares NASDAQ-100", 9, 236, 190, .9), P("XAD5", "Xtrackers Physical Gold", 3, 336, 300, -.3)] }] } };
+  const div = (d, sym, a) => ({ date: addMonths(ym(today()), -d) + "-15", sym, kind: "div", amount: a });
+  S.ibkr = { status: "ok", currency: "EUR", cash: 310, netLiq: null, fetchedAt: Date.now(), fx: {}, navHistory: [], asOf: null,
+    positions: [{ sym: "MSFT", name: "Microsoft", qty: 4, price: 420, value: 1680, pnl: 210, ccy: "EUR" }, { sym: "AAPL", name: "Apple", qty: 6, price: 205, value: 1230, pnl: 95, ccy: "EUR" }, { sym: "NVDA", name: "Nvidia", qty: 8, price: 165, value: 1320, pnl: 410, ccy: "EUR" }, { sym: "VUSA", name: "Vanguard S&P 500", qty: 15, price: 104, value: 1560, pnl: 140, ccy: "EUR" }],
+    dividends: [div(1, "MSFT", 2.9), div(2, "VUSA", 4.1), div(4, "AAPL", 1.3), div(5, "VUSA", 3.8), div(7, "MSFT", 2.7), div(8, "VUSA", 3.6), div(10, "AAPL", 1.2)] };
+  const tx = [];
+  const merchants = [["RIMI TALLINN", 34], ["SELVER", 41], ["PRISMA", 28], ["WOLT", 22], ["BOLT", 9], ["CIRCLE K", 45], ["SPOTIFY", 11.99], ["NETFLIX", 13.99], ["MYFITNESS", 39], ["ZALANDO", 60], ["APOLLO KINO", 14], ["APOTHEKA", 12]];
   for (let i = 11; i >= 0; i--) {
     const k = addMonths(ym(today()), -i);
     tx.push({ id: "s" + i, date: k + "-05", amount: 2650, currency: "EUR", desc: "PALK", merchant: "Employer OÜ", iban: "EE00DEMO1", internal: false, card: false });
     tx.push({ id: "r" + i, date: k + "-02", amount: -620, currency: "EUR", desc: "Üür", merchant: "Landlord", iban: "EE00DEMO1", internal: false, card: false });
     tx.push({ id: "i" + i, date: k + "-06", amount: -500, currency: "EUR", desc: "Investeerimine", merchant: "Growth account", iban: "EE00DEMO1", internal: true, cpAcc: "EE00DEMO3", card: false });
-    for (let j = 0; j < 22; j++) { const m = merchants[Math.floor(rnd() * merchants.length)]; const day = String(1 + Math.floor(rnd() * 27)).padStart(2, "0"); const d = k + "-" + day; if (d > today()) continue; tx.push({ id: k + j, date: d, amount: -Math.round(m[1] * (0.6 + rnd() * .9) * 100) / 100, currency: "EUR", desc: "(..1234) " + d + " 12:00 " + m[0], merchant: m[0], iban: "EE00DEMO1", internal: false, card: true }); }
+    tx.push({ id: "v" + i, date: k + "-06", amount: -200, currency: "EUR", desc: "Säästmine", merchant: "Savings", iban: "EE00DEMO1", internal: true, cpAcc: "EE00DEMO2", card: false });
+    for (let j = 0; j < 26; j++) { const m = merchants[Math.floor(rnd() * merchants.length)]; const day = String(1 + Math.floor(rnd() * 27)).padStart(2, "0"); const d = k + "-" + day; if (d > today()) continue; tx.push({ id: k + j, date: d, amount: -Math.round(m[1] * (0.6 + rnd() * .9) * 100) / 100, currency: "EUR", desc: "(..1234) " + d + " 12:00 " + m[0], merchant: m[0], iban: "EE00DEMO1", internal: false, card: true }); }
   }
   S.lhv.tx = tx.filter(t => t.date <= today()).sort((a, b) => b.date.localeCompare(a.date));
   S.history = { points: [] };
-  S.settings = { ...DEFAULT_SETTINGS(), assets: [{ name: "II pillar pension", kind: "Pension (II/III pillar)", value: 7400 }], backfill: Array.from({ length: 12 }, (_, i) => ({ d: addMonths(ym(today()), -12 + i) + "-15", nw: Math.round(21000 + i * 1150 + Math.sin(i) * 600) })) };
+  S.settings = { ...DEFAULT_SETTINGS(), assets: [{ name: "II pillar pension", kind: "Pension (II/III pillar)", value: 7400 }], plan: { age: "27" } };
+  // made-up price history (one year of trading days) so Insights has something to show
+  const M0 = model(); S.prices = { status: "ok", items: {}, at: Date.now(), sig: "demo" };
+  M0.holdings.forEach((h, n) => {
+    const days = []; const d = new Date(); d.setFullYear(d.getFullYear() - 1);
+    while (d <= new Date()) { if (d.getDay() % 6) days.push(d.toISOString().slice(0, 10)); d.setDate(d.getDate() + 1); }
+    const drift = [0.0007, 0.0005, 0.0009, 0.0002, 0.0008, 0.0004, 0.0011, 0.0005][n % 8];
+    const walk = [1]; for (let i = 1; i < days.length; i++) walk.push(walk[i - 1] * (1 + drift + (rnd() - .5) * .028));
+    const last = walk[walk.length - 1], now = h.price || 100;
+    const closes = days.map((dd, i) => [dd, now * walk[i] / last]);
+    S.prices.items[h.broker + ":" + h.sym] = { ticker: h.sym, proxy: false, ccy: "EUR", live: now, liveAt: Date.now() / 1000, prevClose: closes.length > 1 ? closes[closes.length - 2][1] : now, closes };
+  });
+  // net worth history that ends at today's demo total
+  const tot = M0.total;
+  S.settings.backfill = Array.from({ length: 12 }, (_, i) => ({ d: addMonths(ym(today()), -12 + i) + "-28", nw: Math.round(tot - (12 - i) * 1050 + Math.sin(i * 1.7) * 450) }));
+  if (+today().slice(8, 10) < 20) spMonthSel = addMonths(ym(today()), -1); // show a full month first
   renderAll();
 }
 
@@ -1280,6 +1301,12 @@ async function showAuth() {
 async function boot() {
   route();
   applyBackground();
+  if (new URLSearchParams(location.search).has("demo")) {
+    // public demo: made-up numbers only, never logs in or talks to any bank
+    for (const id of ["btnRefresh", "btnSettings"]) { const b = document.getElementById(id); if (b) b.style.display = "none"; }
+    const a = document.getElementById("auth"); if (a) a.style.display = "none";
+    startDemo(true); return;
+  }
   if (!sb) { document.body.innerHTML = "<p style='padding:40px;color:#fff'>Missing config.js — see README.</p>"; return; }
   const { data } = await sb.auth.getSession();
   SESSION = data.session;
